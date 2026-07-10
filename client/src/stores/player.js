@@ -7,13 +7,13 @@ export const usePlayerStore = defineStore('player', () => {
   const isPlaying = ref(false)
   const currentTime = ref(0)
   const duration = ref(0)
-  const volume = ref(0.8)
+  const volume = ref(0.4)
   const playQueue = ref([])
   const currentIndex = ref(-1)
   const isLoading = ref(false)
   const error = ref(null)
   const playMode = ref('list') // 'list' | 'shuffle'
-  const prevVolume = ref(0.8)
+  const prevVolume = ref(0.4)
 
   const progress = computed(() => {
     if (!duration.value) return 0
@@ -33,7 +33,7 @@ export const usePlayerStore = defineStore('player', () => {
         const { audioUrl, title, cover } = res.data.data
         currentSong.value = {
           ...song,
-          title: title || song.title,
+          title: song.title || title,
           cover: cover || song.cover,
           audioStreamUrl: getAudioStreamUrl(audioUrl),
         }
@@ -162,7 +162,7 @@ export const usePlayerStore = defineStore('player', () => {
       prevVolume.value = volume.value
       volume.value = 0
     } else {
-      volume.value = prevVolume.value || 0.8
+      volume.value = prevVolume.value || 0.4
     }
   }
 
@@ -255,6 +255,17 @@ export const usePlayerStore = defineStore('player', () => {
     }
   }
 
+  // 重命名队列中歌曲的标题
+  function renameQueueSong(bvid, newTitle) {
+    const song = playQueue.value.find((s) => s.bvid === bvid)
+    if (song) {
+      song.title = newTitle
+    }
+    if (currentSong.value?.bvid === bvid) {
+      currentSong.value = { ...currentSong.value, title: newTitle }
+    }
+  }
+
   return {
     currentSong,
     isPlaying,
@@ -281,6 +292,7 @@ export const usePlayerStore = defineStore('player', () => {
     playSingle,
     insertNext,
     removeFromQueue,
+    renameQueueSong,
     clearQueue,
     flushEmpty,
     toggleMute,

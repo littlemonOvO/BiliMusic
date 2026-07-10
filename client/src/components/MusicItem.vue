@@ -18,7 +18,7 @@ const props = defineProps({
   },
 })
 
-const emit = defineEmits(['play', 'add-to-playlist', 'add-to-next', 'remove'])
+const emit = defineEmits(['play', 'add-to-playlist', 'add-to-next', 'remove', 'context-menu'])
 
 const favorites = useFavoritesStore()
 const player = usePlayerStore()
@@ -33,6 +33,7 @@ const isCurrent = () => {
     class="music-item"
     :class="{ 'music-item--active': isCurrent() }"
     @dblclick="emit('play', song)"
+    @contextmenu.prevent="emit('context-menu', { song, event: $event })"
   >
     <div class="music-item__cover-wrap" @click="emit('play', song)">
       <img :src="getImageUrl(song.cover)" class="music-item__cover" alt="cover" />

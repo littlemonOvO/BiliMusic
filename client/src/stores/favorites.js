@@ -44,10 +44,19 @@ export const useFavoritesStore = defineStore('favorites', () => {
     saveToStorage()
   }
 
+  function rename(bvid, newTitle) {
+    const item = items.value.find((item) => item.bvid === bvid)
+    if (item) {
+      item.title = newTitle
+      saveToStorage()
+    }
+  }
+
   return {
     items,
     isFavorite,
     toggle,
     remove,
+    rename,
   }
 })

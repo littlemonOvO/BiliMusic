@@ -66,6 +66,30 @@ export const usePlaylistsStore = defineStore('playlists', () => {
     }
   }
 
+  function renamePlaylistSong(playlistId, bvid, newTitle) {
+    const playlist = playlists.value.find((p) => p.id === playlistId)
+    if (playlist) {
+      const song = playlist.songs.find((s) => s.bvid === bvid)
+      if (song) {
+        song.title = newTitle
+        saveToStorage()
+      }
+    }
+  }
+
+  // 在所有歌单中同步重命名同一首歌
+  function renameSongInAllPlaylists(bvid, newTitle) {
+    let changed = false
+    for (const playlist of playlists.value) {
+      const song = playlist.songs.find((s) => s.bvid === bvid)
+      if (song) {
+        song.title = newTitle
+        changed = true
+      }
+    }
+    if (changed) saveToStorage()
+  }
+
   function getPlaylist(id) {
     return playlists.value.find((p) => p.id === id)
   }
@@ -82,6 +106,8 @@ export const usePlaylistsStore = defineStore('playlists', () => {
     renamePlaylist,
     addToPlaylist,
     removeFromPlaylist,
+    renamePlaylistSong,
+    renameSongInAllPlaylists,
     getPlaylist,
     isInPlaylist,
   }

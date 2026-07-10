@@ -16,7 +16,7 @@ defineProps({
   },
 })
 
-const emit = defineEmits(['play', 'add-to-playlist', 'add-to-next', 'remove'])
+const emit = defineEmits(['play', 'add-to-playlist', 'add-to-next', 'remove', 'context-menu'])
 </script>
 
 <template>
@@ -36,6 +36,7 @@ const emit = defineEmits(['play', 'add-to-playlist', 'add-to-next', 'remove'])
         @add-to-playlist="emit('add-to-playlist', $event)"
         @add-to-next="emit('add-to-next', $event)"
         @remove="emit('remove', $event)"
+        @context-menu="emit('context-menu', $event)"
       />
     </template>
   </div>

@@ -2,14 +2,17 @@
 import { ref } from 'vue'
 import { usePlayerStore } from '../stores/player'
 import { useSearchStore } from '../stores/search'
+import { useFavoritesStore } from '../stores/favorites'
 import { useToast } from '../composables/useToast'
 import { searchMusic } from '../api'
 import SearchBar from '../components/SearchBar.vue'
 import MusicList from '../components/MusicList.vue'
 import AddToPlaylistModal from '../components/AddToPlaylistModal.vue'
+import ContextMenu from '../components/ContextMenu.vue'
 
 const player = usePlayerStore()
 const searchStore = useSearchStore()
+const favorites = useFavoritesStore()
 const { showToast } = useToast()
 
 // 仅用 store 持久化搜索状态（刷新时重置）
@@ -116,6 +119,43 @@ function handleAddToPlaylist(song) {
   selectedSong.value = song
   showAddModal.value = true
 }
+
+// 右键菜单（搜索结果不可重命名/删除）
+const ctxMenu = ref({ show: false, x: 0, y: 0, song: null })
+const ctxItems = ref([])
+
+function handleContextMenu({ song, event }) {
+  const isFav = favorites.isFavorite(song.bvid)
+  ctxItems.value = [
+    { icon: '▶', label: '播放', action: 'play' },
+    { divider: true },
+    { icon: '⏭', label: '添加到下一首', action: 'add-to-next' },
+    { icon: '+', label: '添加到歌单', action: 'add-to-playlist' },
+    { icon: '♥', label: isFav ? '取消收藏' : '收藏', action: 'toggle-fav', active: isFav, danger: isFav },
+  ]
+  ctxMenu.value = { show: true, x: event.clientX, y: event.clientY, song }
+}
+
+function handleCtxAction(action) {
+  const song = ctxMenu.value.song
+  if (!song) return
+
+  switch (action) {
+    case 'play':
+      handlePlay(song)
+      break
+    case 'add-to-next':
+      handleAddToNext(song)
+      break
+    case 'add-to-playlist':
+      handleAddToPlaylist(song)
+      break
+    case 'toggle-fav':
+      favorites.toggle(song)
+      showToast(favorites.isFavorite(song.bvid) ? '已收藏' : '已取消收藏', 'success')
+      break
+  }
+}
 </script>
 
 <template>
@@ -188,6 +228,7 @@ function handleAddToPlaylist(song) {
         @play="handlePlay"
         @add-to-playlist="handleAddToPlaylist"
         @add-to-next="handleAddToNext"
+        @context-menu="handleContextMenu"
       />
       <nav v-if="searchStore.totalPages > 1" class="pagination" :aria-label="'分页 - 当前第 ' + searchStore.page + ' 页，共 ' + searchStore.totalPages + ' 页'">
         <button
@@ -253,6 +294,14 @@ function handleAddToPlaylist(song) {
       :show="showAddModal"
       :song="selectedSong"
       @close="showAddModal = false"
+    />
+    <ContextMenu
+      :show="ctxMenu.show"
+      :x="ctxMenu.x"
+      :y="ctxMenu.y"
+      :items="ctxItems"
+      @select="handleCtxAction"
+      @close="ctxMenu.show = false"
     />
   </div>
 </template>

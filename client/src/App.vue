@@ -1,5 +1,5 @@
 <script setup>
-import { ref, watch, nextTick, computed, onMounted } from 'vue'
+import { ref, watch, nextTick, computed, onMounted, onUnmounted } from 'vue'
 import { usePlayerStore } from './stores/player'
 import { useFavoritesStore } from './stores/favorites'
 import { usePlaylistsStore } from './stores/playlists'
@@ -20,7 +20,33 @@ const playlistMenuPos = ref({ x: 0, y: 0 })
 const audioRetryCount = ref(0)
 const MAX_AUDIO_RETRY = 2
 
-onMounted(() => theme.init())
+onMounted(() => {
+  theme.init()
+
+  // 快捷键：空格暂停/播放，M 静音/解除
+  window.addEventListener('keydown', handleKeydown)
+})
+
+onUnmounted(() => {
+  window.removeEventListener('keydown', handleKeydown)
+})
+
+function handleKeydown(e) {
+  // 输入框聚焦时不触发
+  const tag = e.target.tagName
+  if (tag === 'INPUT' || tag === 'TEXTAREA') return
+
+  if (e.code === 'Space') {
+    e.preventDefault()
+    if (player.currentSong) {
+      player.togglePlay()
+    }
+  } else if (e.key === 'm' || e.key === 'M') {
+    e.preventDefault()
+    player.toggleMute()
+    showToast(player.volume === 0 ? '已静音' : '已解除静音', 'info')
+  }
+}
 
 function closeQueuePanel() {
   showQueuePanel.value = false
