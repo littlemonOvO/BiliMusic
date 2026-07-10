@@ -17,16 +17,16 @@ const PORT = process.env.PORT || 3000
 app.use(cors())
 app.use(express.json())
 
-// 速率限制：每分钟最多 60 次请求
+// 速率限制：每分钟最多 60 次请求（仅应用于搜索接口）
 const limiter = rateLimit({
   windowMs: 60 * 1000,
   max: 60,
   message: { success: false, message: '请求过于频繁，请稍后再试' },
 })
-app.use('/api/', limiter)
 
 // API 路由
-app.use('/api/search', searchRoutes)
+// 仅对搜索接口限流（图片/音频代理属于高频请求，不应受限）
+app.use('/api/search', limiter, searchRoutes)
 app.use('/api/audio', audioRoutes)
 app.use('/api/image', imageRoutes)
 
