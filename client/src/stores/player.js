@@ -12,7 +12,7 @@ export const usePlayerStore = defineStore('player', () => {
   const currentIndex = ref(-1)
   const isLoading = ref(false)
   const error = ref(null)
-  const playMode = ref('list') // 'list' | 'shuffle'
+  const playMode = ref('list') // 'list' | 'single' | 'shuffle'
   const prevVolume = ref(0.4)
 
   const progress = computed(() => {
@@ -67,7 +67,9 @@ export const usePlayerStore = defineStore('player', () => {
 
   // 切换播放模式
   function togglePlayMode() {
-    playMode.value = playMode.value === 'list' ? 'shuffle' : 'list'
+    const modes = ['list', 'single', 'shuffle']
+    const idx = modes.indexOf(playMode.value)
+    playMode.value = modes[(idx + 1) % modes.length]
   }
 
   // 播放列表（深拷贝，避免与源数组共享引用；去重，保留首次出现）
@@ -170,6 +172,11 @@ export const usePlayerStore = defineStore('player', () => {
   function playNext() {
     if (playQueue.value.length === 0) return
 
+    if (playMode.value === 'single') {
+      play(playQueue.value[currentIndex.value])
+      return
+    }
+
     if (playMode.value === 'shuffle' && playQueue.value.length > 1) {
       let randomIndex
       do {
@@ -191,6 +198,11 @@ export const usePlayerStore = defineStore('player', () => {
 
   function playPrev() {
     if (playQueue.value.length === 0) return
+
+    if (playMode.value === 'single') {
+      play(playQueue.value[currentIndex.value])
+      return
+    }
 
     if (playMode.value === 'shuffle' && playQueue.value.length > 1) {
       let randomIndex

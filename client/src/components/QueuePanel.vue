@@ -64,14 +64,18 @@ function handleAddToPlaylist(playlist, song) {
           <div class="queue-panel__actions">
             <button
               class="queue-panel__mode"
-              :class="{ 'queue-panel__mode--shuffle': player.playMode === 'shuffle' }"
+              :class="{
+                'queue-panel__mode--shuffle': player.playMode === 'shuffle',
+                'queue-panel__mode--single': player.playMode === 'single',
+              }"
               @click="player.togglePlayMode"
-              :title="player.playMode === 'list' ? '列表循环' : '随机播放'"
+              :title="player.playMode === 'list' ? '列表循环' : player.playMode === 'single' ? '单曲循环' : '随机播放'"
             >
               <span v-if="player.playMode === 'list'">↻</span>
+              <span v-else-if="player.playMode === 'single'">↻1</span>
               <span v-else>🔀</span>
               <span class="queue-panel__mode-label">
-                {{ player.playMode === 'list' ? '列表循环' : '随机播放' }}
+                {{ player.playMode === 'list' ? '列表循环' : player.playMode === 'single' ? '单曲循环' : '随机播放' }}
               </span>
             </button>
             <button
@@ -266,6 +270,12 @@ function handleAddToPlaylist(playlist, song) {
       color: $color-magenta;
       border-color: rgba($color-magenta, 0.4);
       @include text-glow($color-magenta);
+    }
+
+    &--single {
+      color: $color-cyan-bright;
+      border-color: $color-cyan-deep;
+      @include text-glow;
     }
   }
 
