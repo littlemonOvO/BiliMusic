@@ -6,13 +6,13 @@ const router = Router()
 // 搜索音乐
 router.get('/', async (req, res) => {
   try {
-    const { keyword, page = 1 } = req.query
+    const { keyword, page = 1, order = '' } = req.query
 
     if (!keyword) {
       return res.json({ success: false, message: '请输入搜索关键词' })
     }
 
-    const data = await search(keyword, Number(page))
+    const data = await search(keyword, Number(page), order)
     res.json({ success: true, data })
   } catch (err) {
     res.status(500).json({ success: false, message: err.message })

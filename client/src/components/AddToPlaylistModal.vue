@@ -14,8 +14,14 @@ const { showToast } = useToast()
 
 function handleAdd(playlistId) {
   if (props.song) {
+    if (playlists.isInPlaylist(playlistId, props.song.bvid)) {
+      const pl = playlists.playlists.find((p) => p.id === playlistId)
+      showToast(`这首歌已在「${pl?.name}」中`, 'info')
+      return
+    }
     playlists.addToPlaylist(playlistId, props.song)
-    showToast('已添加到歌单', 'success')
+    const pl = playlists.playlists.find((p) => p.id === playlistId)
+    showToast(`已添加到「${pl?.name}」`, 'success')
     emit('close')
   }
 }
@@ -33,11 +39,14 @@ function handleAdd(playlistId) {
           v-for="p in playlists.playlists"
           :key="p.id"
           class="modal__playlist-item"
+          :class="{ 'modal__playlist-item--added': song && playlists.isInPlaylist(p.id, song.bvid) }"
           @click="handleAdd(p.id)"
         >
-          <span class="modal__playlist-icon">☰</span>
+          <span class="modal__playlist-icon">
+            {{ song && playlists.isInPlaylist(p.id, song.bvid) ? '✓' : '☰' }}
+          </span>
           <span class="modal__playlist-name">{{ p.name }}</span>
-          <span class="modal__playlist-count">{{ p.songs.length }} 首</span>
+          <span class="modal__playlist-count mono">{{ p.songs.length }}</span>
         </div>
       </div>
       <div class="modal__actions">
@@ -54,35 +63,36 @@ function handleAdd(playlistId) {
 .modal-overlay {
   @include flex-center;
   position: fixed;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 100%;
-  background: rgba(0, 0, 0, 0.6);
+  inset: 0;
+  background: var(--overlay);
+  backdrop-filter: blur(4px);
   z-index: 1000;
 }
 
 .modal {
-  background: $color-bg-secondary;
-  border: 1px solid $color-border;
+  @include glass;
+  border: 1px solid $color-border-glow;
   border-radius: $radius-lg;
-  padding: $spacing-lg;
+  padding: $sp-6;
   width: 360px;
   max-height: 500px;
   display: flex;
   flex-direction: column;
-  box-shadow: $shadow-md;
+  box-shadow: $shadow-lg, $glow-cyan-soft;
+  animation: riseIn 0.3s $ease-out;
 
   &__title {
+    font-family: $font-display;
     font-size: 16px;
-    margin-bottom: $spacing-md;
-    color: $color-text-primary;
+    font-weight: 600;
+    margin-bottom: $sp-4;
+    color: $color-text;
   }
 
   &__empty {
-    color: $color-text-secondary;
+    color: $color-text-mute;
     text-align: center;
-    padding: $spacing-xl 0;
+    padding: $sp-8 0;
     font-size: 13px;
   }
 
@@ -94,50 +104,63 @@ function handleAdd(playlistId) {
   &__playlist-item {
     display: flex;
     align-items: center;
-    gap: $spacing-sm;
-    padding: 10px $spacing-sm;
+    gap: $sp-3;
+    padding: $sp-2 $sp-3;
     border-radius: $radius-sm;
     cursor: pointer;
-    transition: all $transition-fast;
+    transition: all $t-fast;
 
     &:hover {
-      background: $color-bg-tertiary;
+      background: $color-cyan-dim;
+    }
+
+    &--added {
+      .modal__playlist-icon {
+        color: $color-cyan-bright;
+      }
+      .modal__playlist-name {
+        color: $color-cyan-bright;
+      }
     }
   }
 
   &__playlist-icon {
-    color: $color-accent;
-    font-size: 16px;
+    color: $color-text-faint;
+    font-size: 14px;
+    width: 16px;
+    text-align: center;
   }
 
   &__playlist-name {
     flex: 1;
-    color: $color-text-primary;
+    color: $color-text;
     font-size: 14px;
+    font-family: $font-display;
   }
 
   &__playlist-count {
-    color: $color-text-secondary;
-    font-size: 12px;
+    color: $color-text-faint;
+    font-size: 11px;
   }
 
   &__actions {
     display: flex;
-    gap: $spacing-sm;
+    gap: $sp-2;
     justify-content: flex-end;
-    margin-top: $spacing-md;
+    margin-top: $sp-4;
   }
 
   &__btn {
-    padding: 8px 16px;
+    padding: $sp-2 $sp-4;
     border-radius: $radius-sm;
+    font-family: $font-display;
     font-size: 13px;
-    transition: all $transition-normal;
+    transition: all $t-fast;
 
     &--cancel {
-      color: $color-text-secondary;
+      color: $color-text-mute;
       &:hover {
-        color: $color-text-primary;
+        color: $color-text;
       }
     }
   }

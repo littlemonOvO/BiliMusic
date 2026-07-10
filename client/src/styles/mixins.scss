@@ -1,5 +1,32 @@
 @use 'variables' as *;
 
+// 玻璃拟态（主题适配）
+@mixin glass {
+  background: $glass-bg;
+  backdrop-filter: blur($glass-blur);
+  -webkit-backdrop-filter: blur($glass-blur);
+}
+
+// 文字发光
+@mixin text-glow($color: $color-cyan-bright) {
+  text-shadow: 0 0 8px rgba($color, 0.4);
+}
+
+// 居中
+@mixin flex-center {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+// 文字省略
+@mixin text-ellipsis {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+// 暗色滚动条
 @mixin scrollbar-dark {
   &::-webkit-scrollbar {
     width: 6px;
@@ -12,26 +39,7 @@
     background: $color-border;
     border-radius: 3px;
     &:hover {
-      background: $color-text-secondary;
+      background: $color-cyan-deep;
     }
   }
-}
-
-@mixin text-ellipsis {
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-@mixin flex-center {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-@mixin card {
-  background: $color-bg-secondary;
-  border: 1px solid $color-border;
-  border-radius: $radius-md;
-  transition: all $transition-normal;
 }

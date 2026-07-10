@@ -1,41 +1,81 @@
-// 配色方案：暗色 + 青色
-$color-bg-primary: #0d1117;
-$color-bg-secondary: #161b22;
-$color-bg-tertiary: #1c2330;
-$color-border: #30363d;
+// ===== NEON SOUNDFLOW 设计令牌 =====
+// 主题相关令牌通过 CSS 变量驱动，支持深色/浅色切换。
+// 结构令牌（间距/圆角/过渡/布局/字体）保持为 SCSS 静态值。
 
-$color-accent: #22d3ee;
-$color-accent-dark: #06b6d4;
-$color-accent-dim: rgba(34, 211, 238, 0.15);
+// ---------- 主题色（CSS 变量驱动） ----------
+$color-void: var(--color-void);
+$color-surface-1: var(--color-surface-1);
+$color-surface-2: var(--color-surface-2);
+$color-border: var(--color-border);
+$color-border-glow: var(--color-border-glow);
 
-$color-text-primary: #e6edf3;
-$color-text-secondary: #7d8590;
+$color-cyan-bright: var(--color-cyan-bright);
+$color-cyan-deep: var(--color-cyan-deep);
+$color-cyan-dim: var(--color-cyan-dim);
 
-$color-error: #f85149;
-$color-success: #22d3ee;
+$color-magenta: var(--color-magenta);
+$color-magenta-dim: var(--color-magenta-dim);
+
+$color-text: var(--color-text);
+$color-text-soft: var(--color-text-soft);
+$color-text-mute: var(--color-text-mute);
+$color-text-faint: var(--color-text-faint);
+
+$color-error: var(--color-error);
+
+// 玻璃 / 遮罩 / 发光 / 阴影
+$glass-bg: var(--glass-bg);
+$glass-blur: var(--glass-blur);
+$overlay: var(--overlay);
+$overlay-strong: var(--overlay-strong);
+$overlay-soft: var(--overlay-soft);
+
+$glow-cyan: var(--glow-cyan);
+$glow-cyan-soft: var(--glow-cyan-soft);
+
+$shadow-sm: var(--shadow-sm);
+$shadow-md: var(--shadow-md);
+$shadow-lg: var(--shadow-lg);
+
+// 青色发光的 RGB 通道（用于 rgba(var(--cyan-glow-rgb), a) 写法）
+$cyan-glow-rgb: var(--cyan-glow-rgb);
+$magenta-glow-rgb: var(--magenta-glow-rgb);
+
+// ---------- 结构令牌（SCSS 静态值） ----------
+// 间距（4px 基准）
+$sp-1: 4px;
+$sp-2: 8px;
+$sp-3: 12px;
+$sp-4: 16px;
+$sp-5: 20px;
+$sp-6: 24px;
+$sp-8: 32px;
+$sp-10: 40px;
+$sp-12: 48px;
+$sp-16: 64px;
 
 // 圆角
-$radius-sm: 4px;
+$radius-xs: 4px;
+$radius-sm: 6px;
 $radius-md: 8px;
 $radius-lg: 12px;
+$radius-pill: 999px;
 
 // 过渡
-$transition-fast: 0.15s ease;
-$transition-normal: 0.25s ease;
+$t-fast: 0.15s;
+$t-normal: 0.25s;
+$t-slow: 0.4s;
 
-// 阴影
-$shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.3);
-$shadow-md: 0 4px 16px rgba(0, 0, 0, 0.4);
-$shadow-glow: 0 0 12px rgba(34, 211, 238, 0.3);
-
-// 间距
-$spacing-xs: 4px;
-$spacing-sm: 8px;
-$spacing-md: 16px;
-$spacing-lg: 24px;
-$spacing-xl: 32px;
+// 缓动
+$ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+$ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
 
 // 布局尺寸
 $sidebar-width: 200px;
-$player-height: 72px;
+$player-height: 80px;
 $topbar-height: 60px;
+
+// 字体
+$font-display: 'Chakra Petch', sans-serif;
+$font-mono: 'JetBrains Mono', monospace;
+$font-body: 'Outfit', sans-serif;

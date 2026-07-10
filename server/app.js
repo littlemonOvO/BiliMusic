@@ -5,6 +5,7 @@ import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
 import searchRoutes from './routes/search.js'
 import audioRoutes from './routes/audio.js'
+import imageRoutes from './routes/image.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
@@ -27,6 +28,7 @@ app.use('/api/', limiter)
 // API 路由
 app.use('/api/search', searchRoutes)
 app.use('/api/audio', audioRoutes)
+app.use('/api/image', imageRoutes)
 
 // 生产环境：托管前端静态文件
 const clientDist = join(__dirname, '../client/dist')

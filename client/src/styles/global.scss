@@ -1,6 +1,91 @@
 @use 'variables' as *;
 @use 'mixins' as *;
 
+// ===== 主题令牌：深色（默认） =====
+:root {
+  --color-void: #06070b;
+  --color-surface-1: #0f1218;
+  --color-surface-2: #161b22;
+  --color-border: #1e2433;
+  --color-border-glow: rgba(34, 211, 238, 0.3);
+
+  --color-cyan-bright: #22d3ee;
+  --color-cyan-deep: #06b6d4;
+  --color-cyan-dim: rgba(34, 211, 238, 0.1);
+
+  --color-magenta: #ec4899;
+  --color-magenta-dim: rgba(236, 72, 153, 0.1);
+
+  --color-text: #e6edf3;
+  --color-text-soft: #b0b8c4;
+  --color-text-mute: #7d8590;
+  --color-text-faint: #4a5568;
+
+  --color-error: #f85149;
+
+  --glass-bg: rgba(15, 18, 24, 0.7);
+  --glass-blur: 10px;
+  --overlay: rgba(6, 7, 11, 0.7);
+  --overlay-strong: rgba(6, 7, 11, 0.85);
+  --overlay-soft: rgba(6, 7, 11, 0.4);
+
+  --glow-cyan: 0 0 16px rgba(34, 211, 238, 0.4);
+  --glow-cyan-soft: 0 0 8px rgba(34, 211, 238, 0.2);
+
+  --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.5);
+
+  --cyan-glow-rgb: 34, 211, 238;
+  --magenta-glow-rgb: 236, 72, 153;
+}
+
+// ===== 主题令牌：浅色（FROST ARCTIC） =====
+// 冷白基调，主题色保留青色，点缀洋红。
+:root[data-theme='light'] {
+  --color-void: #f3f6fb;
+  --color-surface-1: #ffffff;
+  --color-surface-2: #eaf0f7;
+  --color-border: #d4dde8;
+  --color-border-glow: rgba(8, 145, 178, 0.32);
+
+  --color-cyan-bright: #0e8aa8;
+  --color-cyan-deep: #0b6e8a;
+  --color-cyan-dim: rgba(14, 138, 168, 0.1);
+
+  --color-magenta: #d6247a;
+  --color-magenta-dim: rgba(214, 36, 122, 0.09);
+
+  --color-text: #0d2436;
+  --color-text-soft: #2c4456;
+  --color-text-mute: #5a7387;
+  --color-text-faint: #93a6b6;
+
+  --color-error: #db2a4d;
+
+  --glass-bg: rgba(255, 255, 255, 0.78);
+  --glass-blur: 16px;
+  --overlay: rgba(255, 255, 255, 0.82);
+  --overlay-strong: rgba(248, 250, 253, 0.92);
+  --overlay-soft: rgba(255, 255, 255, 0.5);
+
+  --glow-cyan: 0 0 14px rgba(14, 138, 168, 0.35);
+  --glow-cyan-soft: 0 0 6px rgba(14, 138, 168, 0.18);
+
+  --shadow-sm: 0 2px 8px rgba(18, 42, 66, 0.08);
+  --shadow-md: 0 4px 18px rgba(18, 42, 66, 0.1);
+  --shadow-lg: 0 10px 34px rgba(18, 42, 66, 0.14);
+
+  --cyan-glow-rgb: 14, 138, 168;
+  --magenta-glow-rgb: 214, 36, 122;
+
+  color-scheme: light;
+}
+
+:root:not([data-theme='light']) {
+  color-scheme: dark;
+}
+
 * {
   margin: 0;
   padding: 0;
@@ -10,13 +95,14 @@
 html,
 body {
   height: 100%;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
+  font-family: $font-body, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
     'PingFang SC', 'Microsoft YaHei', sans-serif;
-  background: $color-bg-primary;
-  color: $color-text-primary;
+  background: $color-void;
+  color: $color-text;
   font-size: 14px;
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
+  transition: background $t-slow $ease-out, color $t-slow $ease-out;
 }
 
 #app {
@@ -24,10 +110,10 @@ body {
 }
 
 a {
-  color: $color-accent;
+  color: $color-cyan-bright;
   text-decoration: none;
   &:hover {
-    color: $color-accent-dark;
+    color: $color-cyan-deep;
   }
 }
 
@@ -49,6 +135,10 @@ img {
   @include text-ellipsis;
 }
 
+.mono {
+  font-family: $font-mono;
+}
+
 // 滚动条样式
 .scrollable {
   @include scrollbar-dark;
@@ -57,37 +147,30 @@ img {
 
 // Toast 通知
 .toast {
-  position: fixed;
-  top: 80px;
-  right: 24px;
-  z-index: 9999;
-  padding: 12px 20px;
-  border-radius: $radius-md;
-  background: $color-bg-secondary;
+  padding: $sp-3 $sp-5;
+  border-radius: $radius-sm;
+  background: var(--overlay-strong);
+  backdrop-filter: blur($glass-blur);
   border: 1px solid $color-border;
-  color: $color-text-primary;
+  color: $color-text;
+  font-size: 13px;
   box-shadow: $shadow-md;
-  animation: slideIn 0.3s ease;
+  cursor: pointer;
+  transition: all $t-fast;
 
   &.error {
-    border-color: $color-error;
+    border-color: rgba($color-error, 0.5);
     color: $color-error;
   }
 
   &.success {
-    border-color: $color-accent;
-    color: $color-accent;
+    border-color: $color-border-glow;
+    color: $color-cyan-bright;
   }
-}
 
-@keyframes slideIn {
-  from {
-    opacity: 0;
-    transform: translateX(20px);
-  }
-  to {
-    opacity: 1;
-    transform: translateX(0);
+  &.info {
+    border-color: $color-border;
+    color: $color-text-soft;
   }
 }
 
@@ -95,12 +178,24 @@ img {
 .empty-state {
   @include flex-center;
   flex-direction: column;
-  gap: $spacing-md;
-  padding: $spacing-xl * 2;
-  color: $color-text-secondary;
+  gap: $sp-4;
+  padding: $sp-16 0;
+  color: $color-text-mute;
 
   .icon {
     font-size: 48px;
     opacity: 0.5;
+  }
+}
+
+// 动画
+@keyframes riseIn {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
   }
 }

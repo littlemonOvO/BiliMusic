@@ -122,14 +122,15 @@ async function ensureCookie() {
 }
 
 // 搜索 Bilibili 视频（使用 WBI 签名）
-export async function search(keyword, page = 1) {
+export async function search(keyword, page = 1, order = '') {
   await ensureWbiKeys()
 
+  // order: ''=综合, 'click'=播放量, 'pubdate'=新发布
   const params = {
     search_type: 'video',
     keyword,
     page,
-    order: '',
+    order,
     duration: '',
     tids_1: '',
     tids_2: '',
@@ -137,18 +138,37 @@ export async function search(keyword, page = 1) {
 
   const signedParams = signWbi(params, wbiKeys.imgKey, wbiKeys.subKey)
 
-  const res = await api.get('/x/web-interface/wbi/search/type', {
-    params: signedParams,
-    headers: cookieStr ? { Cookie: cookieStr } : {},
-  })
+  // 最多重试 2 次（应对 B站限流返回空结果）
+  let res
+  for (let attempt = 0; attempt < 3; attempt++) {
+    res = await api.get('/x/web-interface/wbi/search/type', {
+      params: signedParams,
+      headers: cookieStr ? { Cookie: cookieStr } : {},
+    })
 
-  if (typeof res.data !== 'object' || res.data.code === undefined) {
-    console.log('Search got non-JSON response, preview:', String(res.data).substring(0, 200))
-    throw new Error('Bilibili 搜索请求被拦截，请稍后重试')
-  }
+    // 检查是否被限流：返回非 JSON 或 code !== 0
+    if (typeof res.data !== 'object' || res.data.code === undefined) {
+      console.log(`Search attempt ${attempt + 1} blocked (non-JSON), retrying...`)
+      if (attempt < 2) {
+        await new Promise((r) => setTimeout(r, 500 * (attempt + 1)))
+        continue
+      }
+      throw new Error('Bilibili 搜索请求被拦截，请稍后重试')
+    }
 
-  if (res.data.code !== 0) {
-    throw new Error(res.data.message || '搜索失败')
+    if (res.data.code !== 0) {
+      throw new Error(res.data.message || '搜索失败')
+    }
+
+    // 检查是否返回空结果（限流时可能返回空 result 数组）
+    const resultArr = res.data.data?.result
+    if (Array.isArray(resultArr) && resultArr.length === 0 && attempt < 2) {
+      console.log(`Search attempt ${attempt + 1} returned empty, retrying...`)
+      await new Promise((r) => setTimeout(r, 500 * (attempt + 1)))
+      continue
+    }
+
+    break
   }
 
   const results = (res.data.data?.result || []).map((item) => ({
@@ -163,6 +183,8 @@ export async function search(keyword, page = 1) {
   return {
     total: res.data.data?.numResults || results.length,
     page,
+    pageSize: 20,
+    numPages: res.data.data?.numPages || Math.max(1, Math.ceil((res.data.data?.numResults || results.length) / 20)),
     results,
   }
 }

@@ -1,24 +1,12 @@
-# Dependencies
-node_modules/
-client/node_modules/
-server/node_modules/
+node_modules
 
-# Build output
-client/dist/
+# 构建产物
+client/dist
+client/.vite
 
-# Python
-.venv/
-__pycache__/
-*.pyc
+# 服务器缓存
+server/cache
 
-# IDE
-.vscode/
-.idea/
-
-# OS
-Thumbs.db
-.DS_Store
-
-# Test files
-test_*.py
-test_*.png
+# 环境变量
+.env
+.env.local

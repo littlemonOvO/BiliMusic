@@ -1,6 +1,7 @@
 # BiliMusic 设计文档
 
 > 创建日期：2026-07-07
+> 最后更新：2026-07-08
 > 状态：已确认
 
 ## 1. 项目概述
@@ -10,16 +11,22 @@ BiliMusic 是一个基于 Web 的音乐应用，允许用户搜索、播放 Bili
 ### 核心功能
 
 - **搜索**：搜索 Bilibili 上的音乐/视频内容
-- **在线播放**：播放音频流，支持播放控制（播放/暂停、进度、音量）
+- **在线播放**：播放音频流，支持播放控制（播放/暂停、进度、音量、静音）、播放队列、播放模式切换
 - **收藏与歌单**：收藏喜欢的音乐，创建和管理自定义歌单
+- **播放队列管理**：独立播放队列，支持去重、插入下一首、清空、列表循环/随机播放
 
 ### 非目标（YAGNI）
 
 - 不支持用户登录/Bilibili 账号关联
 - 不支持歌词显示
 - 不支持评论区
-- 不支持深色/浅色模式切换（仅暗色主题）
 - 不支持音频下载
+
+### 主题模式
+
+- 支持深色（NEON SOUNDFLOW，默认）与浅色（FROST ARCTIC，冷白 + 青色）双主题
+- 通过顶栏切换按钮即时切换，选择持久化到 localStorage
+- 主题相关令牌（颜色/发光/玻璃/遮罩/阴影）由 CSS 变量驱动，结构令牌（间距/圆角/过渡/字体）保持静态
 
 ## 2. 技术架构
 
@@ -27,11 +34,12 @@ BiliMusic 是一个基于 Web 的音乐应用，允许用户搜索、播放 Bili
 
 | 层级 | 技术选型 |
 |------|----------|
-| 前端框架 | Vue 3（Composition API） |
+| 前端框架 | Vue 3（Composition API + `<script setup>`） |
 | 构建工具 | Vite |
 | 状态管理 | Pinia |
 | 路由 | Vue Router |
-| 样式 | 手写 SCSS |
+| 样式 | 手写 SCSS（设计令牌系统） |
+| 字体 | @fontsource 本地字体（避免 CDN 被墙） |
 | 后端 | Node.js + Express |
 | 通信 | REST API（JSON） |
 
@@ -49,25 +57,27 @@ BiliMusic/
 │   │   │   ├── SearchBar.vue
 │   │   │   ├── MusicList.vue
 │   │   │   ├── MusicItem.vue
-│   │   │   ├── PlayerBar.vue
+│   │   │   ├── QueuePanel.vue     # 播放队列面板
 │   │   │   ├── PlaylistModal.vue
 │   │   │   └── AddToPlaylistModal.vue
+│   │   ├── composables/       # 组合式函数
+│   │   │   └── useToast.js    # Toast 通知
 │   │   ├── views/             # 页面视图
 │   │   │   ├── SearchView.vue
 │   │   │   ├── PlayerView.vue
 │   │   │   ├── FavoritesView.vue
 │   │   │   └── PlaylistsView.vue
 │   │   ├── stores/            # Pinia 状态管理
-│   │   │   ├── player.js
+│   │   │   ├── player.js      # 播放器 + 播放队列
 │   │   │   ├── favorites.js
 │   │   │   └── playlists.js
 │   │   ├── router/            # 路由配置
 │   │   │   └── index.js
 │   │   ├── styles/            # 全局样式
-│   │   │   ├── variables.scss # SCSS 变量
+│   │   │   ├── variables.scss # SCSS 设计令牌
 │   │   │   ├── global.scss    # 全局样式
 │   │   │   └── mixins.scss    # SCSS mixins
-│   │   ├── App.vue
+│   │   ├── App.vue            # 根组件（含底部播放栏）
 │   │   └── main.js
 │   ├── index.html
 │   ├── vite.config.js
@@ -75,7 +85,7 @@ BiliMusic/
 ├── server/                    # 后端 Express 服务
 │   ├── routes/
 │   │   ├── search.js          # /api/search 路由
-│   │   └── audio.js           # /api/audio-url 和 /api/audio-stream 路由
+│   │   └── audio.js           # /api/audio/url 和 /api/audio/stream 路由
 │   ├── services/
 │   │   └── bilibili.js        # Bilibili API 封装
 │   ├── app.js                 # Express 应用入口
@@ -119,8 +129,18 @@ BiliMusic/
 | 端点 | 方法 | 参数 | 说明 |
 |------|------|------|------|
 | `/api/search` | GET | `keyword`、`page` | 搜索音乐，返回格式化结果列表 |
-| `/api/audio-url` | GET | `bvid` | 获取音频流地址，后端内部完成 bvid→cid→playurl 的完整流程 |
-| `/api/audio-stream` | GET | `url` | 音频流代理：转发音频请求，附加 Referer 头，返回音频流给前端 |
+| `/api/audio/url` | GET | `bvid` | 获取音频流地址，后端内部完成 bvid→cid→playurl 的完整流程 |
+| `/api/audio/stream` | GET | `url` | 音频流代理：完整下载到内存，服务端处理 Range 请求 |
+
+### 音频流代理实现（关键）
+
+由于 B站 CDN 对单个连接有数据量限制（约 150s 数据量后断开），且浏览器 Range 续传请求 B站不响应，音频流代理采用**完整下载到内存**方案：
+
+- **下载方式**：`axios.get(url, { responseType: 'arraybuffer' })` 完整下载
+- **完整性校验**：对比 `Content-Length`，不完整则抛错
+- **Range 请求支持**：服务端从内存 Buffer 截取数据返回 206 响应（支持 seek）
+- **内存缓存**：5 分钟 TTL，LRU 策略限制最多 10 个（避免内存泄漏）
+- **请求头**：附加 `Referer: https://www.bilibili.com` 和 `User-Agent`
 
 ### 请求头处理
 
@@ -156,17 +176,29 @@ Cookie: （可选，用于提升接口可用性）
 |------|------|------|
 | `/` | SearchView | 搜索页，默认首页 |
 | `/player` | PlayerView | 播放器详情页 |
-| `/favorites` | FavoritesView | 收藏列表 |
-| `/playlists` | PlaylistsView | 歌单列表及详情 |
+| `/favorites` | FavoritesView | 收藏列表（含"播放全部"按钮） |
+| `/playlists` | PlaylistsView | 歌单列表及详情（含"播放歌单"/"加入播放列表"按钮） |
 
 ### 核心组件
 
-- **SearchBar.vue**：搜索输入框，支持回车搜索，输入时显示搜索建议
-- **MusicList.vue**：音乐列表组件，可复用于搜索结果、收藏、歌单页面
-- **MusicItem.vue**：单条音乐条目，显示封面、标题、UP主、时长，支持点击播放和右键菜单（收藏、添加到歌单）
-- **PlayerBar.vue**：底部固定播放控制栏，显示当前歌曲信息、播放/暂停按钮、进度条、音量控制
-- **PlaylistModal.vue**：创建/编辑歌单的弹窗
+- **SearchBar.vue**：搜索输入框，支持回车搜索
+- **MusicList.vue**：音乐列表组件，可复用于搜索结果、收藏、歌单页面；透传 `play`/`add-to-playlist`/`add-to-next`/`remove` 事件
+- **MusicItem.vue**：单条音乐条目，显示封面、标题、UP主、时长；操作按钮：收藏(♥)、添加到下一首(⏭)、添加到歌单(+)、从歌单移除(✕)
+- **QueuePanel.vue**：播放队列面板（fixed 定位），显示当前队列，支持切歌、移除、收藏、添加到歌单、清空、切换播放模式
+- **PlaylistModal.vue**：创建歌单的弹窗
 - **AddToPlaylistModal.vue**：选择添加到哪个歌单的弹窗
+
+### 底部播放栏（App.vue）
+
+全局固定播放栏，无歌曲时收起（height:0 过渡），有歌曲时显示：
+- 当前歌曲信息（封面、标题、UP主）
+- 收藏按钮(♥)
+- 添加到歌单按钮(＋) - 点击弹出 fixed 定位菜单
+- 声波可视化（32 根柱状条，播放时动画）
+- 播放控制（上一首、播放/暂停、下一首）
+- 进度条（可拖动 seek）
+- 音量控制（喇叭图标点击静音 + 滑块）
+- 播放队列按钮(☰) - 显示队列数量徽标
 
 ### 状态管理（Pinia Stores）
 
@@ -176,7 +208,27 @@ Cookie: （可选，用于提升接口可用性）
 - `currentTime`：当前播放进度
 - `duration`：总时长
 - `volume`：音量（0-1）
-- `playQueue`：播放队列
+- `prevVolume`：静音前的音量（用于取消静音恢复）
+- `playQueue`：播放队列（深拷贝，与源数据隔离）
+- `currentIndex`：当前播放索引
+- `playMode`：播放模式（`'list'` 列表循环 | `'shuffle'` 随机播放）
+- `isLoading`、`error`：加载状态和错误信息
+
+核心方法：
+- `play(song)`：获取音频流地址并播放
+- `togglePlay()`：切换播放/暂停
+- `setQueue(songs, index)`：设置播放队列（去重 + 深拷贝）
+- `playPlaylist(songs)`：替换队列为歌单所有歌曲并播放第一首
+- `addToQueue(songs)`：追加歌曲到队列末尾（去重），返回实际添加数量
+- `playSingle(song)`：只播放一首歌（替换整个队列）
+- `insertNext(song)`：插入到当前播放的下一首位置（去重），返回是否成功
+- `playNext()` / `playPrev()`：根据播放模式切换下一首/上一首
+- `playIndex(index)`：从队列中播放指定索引
+- `removeFromQueue(bvid)`：从队列移除歌曲（若移除当前歌曲则自动播放下一首）
+- `clearQueue()`：清空队列但保留 currentSong（等面板关闭时再清除）
+- `flushEmpty()`：队列已空时真正清除 currentSong
+- `toggleMute()`：切换静音
+- `togglePlayMode()`：切换列表循环/随机播放
 
 **favorites.js**：
 - `items`：收藏的歌曲列表
@@ -185,11 +237,38 @@ Cookie: （可选，用于提升接口可用性）
 - 自动同步到 localStorage
 
 **playlists.js**：
-- `playlists`：歌单列表（每个歌单含 id、name、songs）
+- `playlists`：歌单列表（每个歌单含 id、name、songs、createdAt）
 - `createPlaylist(name)`：创建歌单
-- `addToPlaylist(playlistId, song)`：添加歌曲到歌单
+- `addToPlaylist(playlistId, song)`：添加歌曲到歌单（已去重）
 - `removeFromPlaylist(playlistId, bvid)`：从歌单移除歌曲
+- `getPlaylist(id)`、`isInPlaylist(playlistId, bvid)`、`deletePlaylist(id)`、`renamePlaylist(id, name)`
 - 自动同步到 localStorage
+
+### 数据隔离与去重
+
+- **数据隔离**：所有进入播放队列的歌曲都通过 `songs.map(s => ({...s}))` 深拷贝，避免与收藏列表、搜索结果、歌单共享引用
+- **播放队列去重**：`setQueue`、`addToQueue`、`insertNext` 均按 `bvid` 去重
+- **歌单去重**：`addToPlaylist` 内部检查 `bvid` 是否已存在
+
+### 音频播放与错误恢复
+
+前端 audio 元素的事件处理与状态同步：
+
+| 事件 | 处理逻辑 |
+|------|----------|
+| `@play` | 同步 `isPlaying = true` |
+| `@pause` | 同步 `isPlaying = false`；清除 waiting 超时计时器 |
+| `@playing` | 清除 waiting 超时；重置重试计数 |
+| `@ended` | 调用 `playNext()` 自动切下一首 |
+| `@error` | 自动重试（最多 2 次），超过则提示用户 |
+| `@waiting` | 启动 15s 超时计时器，超时后重试 |
+| `@timeupdate` | 更新 `currentTime` |
+| `@loadedmetadata` | 更新 `duration` |
+
+**竞态条件处理**：
+- `audioStreamUrl` watch 和 `isPlaying` watch 都会调用 `audio.play()`，通过捕获 `AbortError` 避免冲突
+- 切歌时 `audioStreamUrl` watch 清除 waiting 计时器，避免旧计时器在新歌上错误触发
+- `audioRetryCount` 在 `onAudioPlaying`（播放成功）时重置，而非切歌时重置（避免重试时计数被清零导致无限重试）
 
 ### 页面布局
 
@@ -204,55 +283,75 @@ Cookie: （可选，用于提升接口可用性）
 │  ◌ 歌单  │                              │
 │          │                              │
 ├──────────┴──────────────────────────────┤
-│  [封面] 歌曲名 - UP主  [▶] ━━━━ 3:21   │  ← 底部播放栏（固定）
+│  [封面] 歌曲名 - UP主  [▶] ━━━━ 3:21   │  ← 底部播放栏（固定，无歌曲时收起）
 └─────────────────────────────────────────┘
 ```
 
 - 左侧边栏：导航菜单，当前页高亮（青色）
 - 主内容区：根据路由显示对应内容
-- 底部播放栏：全局可见，显示当前播放状态
+- 底部播放栏：全局可见，无歌曲时 height:0 收起（不占空间）
 
 ## 5. UI 视觉设计
 
-### 配色方案（暗色 + 青色）
+### 设计风格
+
+**NEON SOUNDFLOW** - 复古未来主义音频实验室美学
+
+### 配色方案（暗色 + 青色霓虹）
 
 | 用途 | 颜色值 | 说明 |
 |------|--------|------|
-| 主背景 | `#0D1117` | 深黑蓝 |
-| 次背景/卡片 | `#161B22` | 稍亮的深色 |
-| 边框 | `#30363D` | 灰色边框 |
-| 主强调色 | `#22D3EE` | 青色（按钮、高亮、进度条、激活态） |
-| 次强调色 | `#06B6D4` | 深青色（hover 状态） |
-| 主文字 | `#E6EDF3` | 浅灰白 |
-| 次文字 | `#7D8590` | 灰色 |
-| 错误色 | `#F85149` | 红色 |
+| 主背景 | `#06070B` | 深黑（$color-void） |
+| 次背景/卡片 | `#0F1218` | 稍亮的深色（$color-surface-1） |
+| 边框 | `#1E2433` | 灰色边框（$color-border） |
+| 主强调色 | `#22D3EE` | 青色霓虹（$color-cyan-bright） |
+| 深青色 | `#06B6D4` | hover/渐变（$color-cyan-deep） |
+| 次强调色 | `#EC4899` | 品红（收藏、随机播放） |
+| 主文字 | `#E6EDF3` | 浅灰白（$color-text） |
+| 次文字 | `#7D8590` | 灰色（$color-text-mute） |
+| 错误色 | `#F85149` | 红色（$color-error） |
 
 ### 字体
 
-系统字体栈：`-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif`
+使用 @fontsource 本地字体（避免 Google Fonts CDN 被墙）：
+- **Display 字体**：Orbitron（标题、按钮）
+- **Mono 字体**：JetBrains Mono（数据、计数、状态）
+- **正文字体**：Rajdhani
 
 ### 视觉风格
 
+- 玻璃拟态（glassmorphism）：`backdrop-filter: blur(10px)` + 半透明背景
+- 青色霓虹发光效果：`text-glow` 和 `box-shadow` glow
+- 过渡动画 `0.2-0.4s` ease
 - 卡片式布局，圆角 `8px`
-- 悬浮阴影效果，hover 时背景微亮
-- 过渡动画 `0.2-0.3s` ease
-- 青色用于：当前播放项、激活导航项、主按钮、进度条
-- 响应式设计，适配桌面和移动端
+- 声波可视化动画（底部播放栏 32 根柱状条）
+- 页面切换过渡动画
+- 响应式设计，适配桌面和移动端（< 900px 隐藏侧边栏文字）
+
+### 弹窗定位策略
+
+由于 `overflow: hidden` 和 `backdrop-filter` 会裁剪子元素的绝对定位弹窗，所有弹窗菜单采用 **`position: fixed` + JS 计算坐标** 方案：
+- 底部播放栏的"添加到歌单"菜单：`fixed` + `transform: translateY(-100%)` 紧贴按钮上方
+- QueuePanel 的"添加到歌单"菜单：`fixed` + `rect.right - 220` 右对齐
+- QueuePanel 使用 `v-if` 组件级卸载，避免状态残留
 
 ## 6. 错误处理
 
 ### 前端
 
-- API 请求失败时显示 toast 通知
+- API 请求失败时显示 toast 通知（`useToast` composable）
 - 搜索结果为空时显示空状态提示
-- 音频加载失败时提供重试按钮
-- 网络断开时显示全局提示
+- 音频加载失败时自动重试（最多 2 次）
+- 音频缓冲超时（15s 无数据）自动重试
+- 超过重试限制后提示用户切换歌曲
+- 播放器调试日志系统（`window.__exportPlayerLogs()`）
 
 ### 后端
 
 - Bilibili API 请求失败返回统一错误格式
-- 请求超时设置 10 秒
-- 简单速率限制（每分钟最多 60 次请求）
+- 音频流下载超时设置 30 秒
+- 音频数据完整性校验（对比 Content-Length）
+- 音频缓存 LRU 策略（5 分钟 TTL，最多 10 个）
 
 ## 7. 测试策略
 
@@ -266,3 +365,12 @@ Cookie: （可选，用于提升接口可用性）
 - 音频 URL 获取流程
 - 收藏/歌单的 localStorage 持久化
 - 播放器状态切换
+- 播放队列去重逻辑
+- 音频流代理的 Range 请求处理
+
+## 8. 已知限制
+
+- B站 CDN 数据量限制：通过完整下载到内存方案规避，但大文件会占用较多内存
+- 无用户登录：收藏和歌单仅存储在本地 localStorage
+- 无歌词显示
+- 无音频下载
