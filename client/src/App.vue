@@ -398,7 +398,7 @@ function onAudioCanPlay(e) {}
                 @click="togglePlaylistMenu($event)"
                 title="添加到歌单"
               >
-                ＋
+                ♪
               </button>
             </div>
 

@@ -126,7 +126,7 @@ function handleAddToPlaylist(playlist, song) {
                 @click.stop="togglePlaylistMenu(song, $event)"
                 title="添加到歌单"
               >
-                ＋
+                ♪
               </button>
               <button
                 class="queue-item__btn queue-item__btn--remove"

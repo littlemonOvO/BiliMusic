@@ -129,8 +129,8 @@ function handleContextMenu({ song, event }) {
   ctxItems.value = [
     { icon: '▶', label: '播放', action: 'play' },
     { divider: true },
-    { icon: '⏭', label: '添加到下一首', action: 'add-to-next' },
-    { icon: '+', label: '添加到歌单', action: 'add-to-playlist' },
+    { icon: '⤵', label: '添加到下一首', action: 'add-to-next' },
+    { icon: '♪', label: '添加到歌单', action: 'add-to-playlist' },
     { icon: '♥', label: isFav ? '取消收藏' : '收藏', action: 'toggle-fav', active: isFav, danger: isFav },
   ]
   ctxMenu.value = { show: true, x: event.clientX, y: event.clientY, song }

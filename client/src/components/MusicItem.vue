@@ -63,14 +63,14 @@ const isCurrent = () => {
         @click.stop="emit('add-to-next', song)"
         title="添加到下一首播放"
       >
-        ⏭
+        ⤵
       </button>
       <button
         class="music-item__btn"
         @click.stop="emit('add-to-playlist', song)"
         title="添加到歌单"
       >
-        +
+        ♪
       </button>
       <button
         v-if="showRemove"

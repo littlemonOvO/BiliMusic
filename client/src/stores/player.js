@@ -23,6 +23,8 @@ export const usePlayerStore = defineStore('player', () => {
   // 播放一首歌
   async function play(song) {
     currentSong.value = song
+    currentTime.value = 0
+    duration.value = 0
     isLoading.value = true
     error.value = null
     isPlaying.value = false
