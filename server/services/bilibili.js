@@ -1,6 +1,20 @@
 import axios from 'axios'
 import crypto from 'crypto'
 
+// B站 API 请求间隔控制（防止限流）
+let lastSearchTime = 0
+const MIN_SEARCH_INTERVAL = 600 // ms，两次搜索请求之间的最小间隔
+
+async function waitSearchSlot() {
+  const now = Date.now()
+  const elapsed = now - lastSearchTime
+  if (elapsed < MIN_SEARCH_INTERVAL) {
+    const wait = MIN_SEARCH_INTERVAL - elapsed
+    await new Promise((r) => setTimeout(r, wait))
+  }
+  lastSearchTime = Date.now()
+}
+
 const BILIBILI_HEADERS = {
   'User-Agent':
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
@@ -122,8 +136,10 @@ async function ensureCookie() {
 }
 
 // 搜索 Bilibili 视频（使用 WBI 签名）
-export async function search(keyword, page = 1, order = '') {
+export async function search(keyword, page = 1, order = '', reqId = '') {
+  console.log(`${reqId} [bilibili.search] start: keyword="${keyword}" page=${page} order="${order}"`)
   await ensureWbiKeys()
+  console.log(`${reqId} [bilibili.search] WBI keys ready`)
 
   // order: ''=综合, 'click'=播放量, 'pubdate'=新发布
   const params = {
@@ -137,35 +153,82 @@ export async function search(keyword, page = 1, order = '') {
   }
 
   const signedParams = signWbi(params, wbiKeys.imgKey, wbiKeys.subKey)
+  console.log(`${reqId} [bilibili.search] signed params:`, JSON.stringify({ ...signedParams, w_rid: signedParams.w_rid?.substring(0, 16) + '...' }))
 
-  // 最多重试 2 次（应对 B站限流返回空结果）
+  // 最多重试 3 次（应对 B站限流返回空结果）
   let res
   for (let attempt = 0; attempt < 3; attempt++) {
-    res = await api.get('/x/web-interface/wbi/search/type', {
-      params: signedParams,
-      headers: cookieStr ? { Cookie: cookieStr } : {},
-    })
+    const tAttempt = Date.now()
+    console.log(`${reqId} [bilibili.search] attempt ${attempt + 1}/3, sending request...`)
 
-    // 检查是否被限流：返回非 JSON 或 code !== 0
-    if (typeof res.data !== 'object' || res.data.code === undefined) {
-      console.log(`Search attempt ${attempt + 1} blocked (non-JSON), retrying...`)
+    // 等待请求间隔，防止 B站限流
+    await waitSearchSlot()
+
+    try {
+      res = await api.get('/x/web-interface/wbi/search/type', {
+        params: signedParams,
+        headers: cookieStr ? { Cookie: cookieStr } : {},
+      })
+    } catch (axiosErr) {
+      const elapsed = Date.now() - tAttempt
+      console.error(`${reqId} [bilibili.search] attempt ${attempt + 1} AXIOS ERROR: ${axiosErr.message}, elapsed=${elapsed}ms`)
+      console.error(`${reqId} [bilibili.search] axios error code: ${axiosErr.code}, status: ${axiosErr.response?.status}`)
+      if (axiosErr.response) {
+        console.error(`${reqId} [bilibili.search] response body:`, JSON.stringify(axiosErr.response.data).substring(0, 500))
+      }
       if (attempt < 2) {
-        await new Promise((r) => setTimeout(r, 500 * (attempt + 1)))
+        const delay = 500 * (attempt + 1)
+        console.log(`${reqId} [bilibili.search] retrying in ${delay}ms...`)
+        await new Promise((r) => setTimeout(r, delay))
         continue
       }
-      throw new Error('Bilibili 搜索请求被拦截，请稍后重试')
+      throw axiosErr
     }
 
+    const elapsed = Date.now() - tAttempt
+    console.log(`${reqId} [bilibili.search] attempt ${attempt + 1} response received, elapsed=${elapsed}ms`)
+
+    // 检查响应类型
+    if (typeof res.data !== 'object' || res.data === null) {
+      console.error(`${reqId} [bilibili.search] attempt ${attempt + 1} NON-JSON RESPONSE`)
+      console.error(`${reqId} [bilibili.search] response type: ${typeof res.data}`)
+      console.error(`${reqId} [bilibili.search] response preview:`, String(res.data).substring(0, 500))
+      if (attempt < 2) {
+        const delay = 500 * (attempt + 1)
+        console.log(`${reqId} [bilibili.search] retrying in ${delay}ms...`)
+        await new Promise((r) => setTimeout(r, delay))
+        continue
+      }
+      throw new Error('Bilibili 搜索请求被拦截（非 JSON 响应），请稍后重试')
+    }
+
+    console.log(`${reqId} [bilibili.search] response code=${res.data.code}, message="${res.data.message || ''}"`)
+
     if (res.data.code !== 0) {
+      console.error(`${reqId} [bilibili.search] API ERROR: code=${res.data.code}, message="${res.data.message}"`)
+      console.error(`${reqId} [bilibili.search] full response data:`, JSON.stringify(res.data).substring(0, 500))
       throw new Error(res.data.message || '搜索失败')
     }
 
-    // 检查是否返回空结果（限流时可能返回空 result 数组）
+    // 检查结果数组
     const resultArr = res.data.data?.result
-    if (Array.isArray(resultArr) && resultArr.length === 0 && attempt < 2) {
-      console.log(`Search attempt ${attempt + 1} returned empty, retrying...`)
-      await new Promise((r) => setTimeout(r, 500 * (attempt + 1)))
+    const numResults = res.data.data?.numResults
+    const numPages = res.data.data?.numPages
+    console.log(`${reqId} [bilibili.search] result: ${Array.isArray(resultArr) ? resultArr.length : 'N/A'} items, numResults=${numResults}, numPages=${numPages}`)
+
+    // 检查是否返回空结果或异常结构（限流时 result 可能不是数组、为 null/undefined，或空数组）
+    const isEmpty = !Array.isArray(resultArr) || resultArr.length === 0 || numResults === undefined
+    if (isEmpty && attempt < 2) {
+      console.log(`${reqId} [bilibili.search] attempt ${attempt + 1} returned EMPTY/INVALID result (result=${Array.isArray(resultArr) ? '[]' : typeof resultArr}), retrying...`)
+      // 打印完整响应数据帮助调试
+      console.log(`${reqId} [bilibili.search] full data:`, JSON.stringify(res.data.data || {}).substring(0, 300))
+      const delay = 800 * (attempt + 1)
+      await new Promise((r) => setTimeout(r, delay))
       continue
+    }
+
+    if (isEmpty && attempt === 2) {
+      console.error(`${reqId} [bilibili.search] ALL 3 ATTEMPTS returned empty/invalid result`)
     }
 
     break
@@ -180,11 +243,16 @@ export async function search(keyword, page = 1, order = '') {
     playCount: item.play,
   }))
 
+  const total = res.data.data?.numResults || results.length
+  const numPages = res.data.data?.numPages || Math.max(1, Math.ceil(total / 20))
+
+  console.log(`${reqId} [bilibili.search] DONE: ${results.length} results parsed, total=${total}, numPages=${numPages}`)
+
   return {
-    total: res.data.data?.numResults || results.length,
+    total,
     page,
     pageSize: 20,
-    numPages: res.data.data?.numPages || Math.max(1, Math.ceil((res.data.data?.numResults || results.length) / 20)),
+    numPages,
     results,
   }
 }
