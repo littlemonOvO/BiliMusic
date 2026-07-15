@@ -28,9 +28,13 @@ const api = axios.create({
   headers: BILIBILI_HEADERS,
 })
 
-// 缓存
+// 缓存（带 TTL，B站密钥和 Cookie 会定期失效）
 let cookieStr = ''
 let wbiKeys = null
+let cookieTime = 0
+let wbiKeysTime = 0
+const COOKIE_TTL = 30 * 60 * 1000 // 30 分钟
+const WBI_KEYS_TTL = 60 * 60 * 1000 // 1 小时
 
 // WBI 签名所需的字符索引表（64 个元素）
 const WBI_MIXIN_KEY_ENC_TABS = [
@@ -42,7 +46,7 @@ const WBI_MIXIN_KEY_ENC_TABS = [
 
 // 获取 WBI 签名密钥
 async function ensureWbiKeys() {
-  if (wbiKeys) return
+  if (wbiKeys && Date.now() - wbiKeysTime < WBI_KEYS_TTL) return
 
   await ensureCookie()
 
@@ -57,6 +61,7 @@ async function ensureWbiKeys() {
   const subKey = subUrl.split('/').pop().split('.')[0] || ''
 
   wbiKeys = { imgKey, subKey }
+  wbiKeysTime = Date.now()
   console.log('Got WBI keys:', imgKey.substring(0, 16) + '...', subKey.substring(0, 16) + '...')
 }
 
@@ -98,7 +103,7 @@ function signWbi(params, imgKey, subKey) {
 
 // 获取 Cookie
 async function ensureCookie() {
-  if (cookieStr) return
+  if (cookieStr && Date.now() - cookieTime < COOKIE_TTL) return
 
   try {
     const spiRes = await axios.get('https://api.bilibili.com/x/frontend/finger/spi', {
@@ -129,6 +134,7 @@ async function ensureCookie() {
     }
 
     cookieStr = cookies.join('; ')
+    cookieTime = Date.now()
     console.log('Got cookies:', cookieStr.substring(0, 80) + '...')
   } catch (err) {
     console.log('Failed to get cookie:', err.message)
@@ -205,6 +211,20 @@ export async function search(keyword, page = 1, order = '', reqId = '') {
     console.log(`${reqId} [bilibili.search] response code=${res.data.code}, message="${res.data.message || ''}"`)
 
     if (res.data.code !== 0) {
+      // 鉴权失效（code=-101 未登录 / code=-352 风控），清除缓存以便下次重新获取
+      if (res.data.code === -101 || res.data.code === -352) {
+        console.log(`${reqId} [bilibili.search] auth expired (code=${res.data.code}), clearing cache for refresh`)
+        cookieStr = ''
+        cookieTime = 0
+        wbiKeys = null
+        wbiKeysTime = 0
+        if (attempt < 2) {
+          const delay = 1000 * (attempt + 1)
+          console.log(`${reqId} [bilibili.search] refreshing credentials, retrying in ${delay}ms...`)
+          await new Promise((r) => setTimeout(r, delay))
+          continue
+        }
+      }
       console.error(`${reqId} [bilibili.search] API ERROR: code=${res.data.code}, message="${res.data.message}"`)
       console.error(`${reqId} [bilibili.search] full response data:`, JSON.stringify(res.data).substring(0, 500))
       throw new Error(res.data.message || '搜索失败')

@@ -14,6 +14,26 @@ const BILIBILI_HEADERS = {
   Referer: 'https://www.bilibili.com',
 }
 
+// SSRF 防护：仅允许 B站 CDN 域名
+const ALLOWED_HOSTS = [
+  'bilivideo.com',
+  'bilivideo.cn',
+  'hdslb.com',
+  'biliapi.net',
+  'bilibili.com',
+]
+
+function isAllowedUrl(rawUrl) {
+  try {
+    const parsed = new URL(rawUrl)
+    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return false
+    const host = parsed.hostname.toLowerCase()
+    return ALLOWED_HOSTS.some((allowed) => host === allowed || host.endsWith('.' + allowed))
+  } catch {
+    return false
+  }
+}
+
 // 获取音频流地址（bvid -> cid -> playurl 完整流程）
 router.get('/url', async (req, res) => {
   try {
@@ -117,6 +137,10 @@ router.get('/stream', async (req, res) => {
       return res.status(400).json({ success: false, message: '缺少 url 参数' })
     }
 
+    if (!isAllowedUrl(url)) {
+      return res.status(403).json({ success: false, message: '不允许的 URL 域名' })
+    }
+
     const { dataPath, metaPath } = getCachePath(url)
 
     // 检查缓存是否有效，记录缓存命中/未命中日志
@@ -145,7 +169,8 @@ router.get('/stream', async (req, res) => {
       const expectedLength = parseInt(response.headers['content-length'])
 
       // 先写到临时文件，下载完成后重命名（避免半截文件被当作有效缓存）
-      const tmpPath = dataPath + '.tmp'
+      // 使用 PID + 随机数确保唯一，防止并发请求写入同一文件
+      const tmpPath = `${dataPath}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`
       const writeStream = fs.createWriteStream(tmpPath)
 
       await new Promise((resolve, reject) => {
@@ -162,8 +187,13 @@ router.get('/stream', async (req, res) => {
         throw new Error(`数据不完整: ${actualSize}/${expectedLength}`)
       }
 
-      // 重命名为正式缓存文件
-      fs.renameSync(tmpPath, dataPath)
+      // 重命名为正式缓存文件（若已被其他请求完成则跳过）
+      try {
+        fs.renameSync(tmpPath, dataPath)
+      } catch {
+        // dataPath 已存在（其他并发请求已完成），清理自己的临时文件
+        if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath)
+      }
 
       // 写入元数据
       writeMeta(metaPath, {

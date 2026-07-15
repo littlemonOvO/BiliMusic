@@ -9,6 +9,26 @@ const BILIBILI_HEADERS = {
   Referer: 'https://www.bilibili.com',
 }
 
+// SSRF 防护：仅允许 B站 CDN 域名
+const ALLOWED_HOSTS = [
+  'bilivideo.com',
+  'bilivideo.cn',
+  'hdslb.com',
+  'biliapi.net',
+  'bilibili.com',
+]
+
+function isAllowedUrl(rawUrl) {
+  try {
+    const parsed = new URL(rawUrl)
+    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return false
+    const host = parsed.hostname.toLowerCase()
+    return ALLOWED_HOSTS.some((allowed) => host === allowed || host.endsWith('.' + allowed))
+  } catch {
+    return false
+  }
+}
+
 // 图片代理：转发图片请求，附加 Referer 头（避免 B站防盗链）
 router.get('/', async (req, res) => {
   try {
@@ -16,6 +36,10 @@ router.get('/', async (req, res) => {
 
     if (!url) {
       return res.status(400).json({ success: false, message: '缺少 url 参数' })
+    }
+
+    if (!isAllowedUrl(url)) {
+      return res.status(403).json({ success: false, message: '不允许的 URL 域名' })
     }
 
     const response = await axios.get(url, {

@@ -14,6 +14,7 @@ export const usePlayerStore = defineStore('player', () => {
   const error = ref(null)
   const playMode = ref('list') // 'list' | 'single' | 'shuffle'
   const prevVolume = ref(0.4)
+  let playReqId = 0
 
   const progress = computed(() => {
     if (!duration.value) return 0
@@ -22,6 +23,7 @@ export const usePlayerStore = defineStore('player', () => {
 
   // 播放一首歌
   async function play(song) {
+    const reqId = ++playReqId
     currentSong.value = song
     currentTime.value = 0
     duration.value = 0
@@ -31,6 +33,9 @@ export const usePlayerStore = defineStore('player', () => {
 
     try {
       const res = await getAudioUrl(song.bvid)
+      // 竞态保护：若期间又发起了新的 play()，丢弃本次结果
+      if (reqId !== playReqId) return
+
       if (res.data.success) {
         const { audioUrl, title, cover } = res.data.data
         currentSong.value = {
@@ -44,13 +49,17 @@ export const usePlayerStore = defineStore('player', () => {
         error.value = res.data.message || '获取音频失败'
       }
     } catch (err) {
+      if (reqId !== playReqId) return
       error.value = err.response?.data?.message || '播放失败，请重试'
     } finally {
-      isLoading.value = false
+      if (reqId === playReqId) {
+        isLoading.value = false
+      }
     }
   }
 
   function togglePlay() {
+    if (!currentSong.value) return
     isPlaying.value = !isPlaying.value
   }
 

@@ -14,7 +14,10 @@ const app = express()
 const PORT = process.env.PORT || 3000
 
 // 中间件
-app.use(cors())
+const allowedOrigins = process.env.ALLOWED_ORIGINS
+  ? process.env.ALLOWED_ORIGINS.split(',').map((s) => s.trim())
+  : ['http://localhost:5173', 'http://localhost:3000']
+app.use(cors({ origin: allowedOrigins }))
 app.use(express.json())
 
 // 速率限制：每分钟最多 60 次请求（仅应用于搜索接口）
@@ -34,11 +37,12 @@ app.use('/api/image', imageRoutes)
 const clientDist = join(__dirname, '../client/dist')
 app.use(express.static(clientDist))
 
-// SPA 回退：非 API 路由返回 index.html
+// SPA 回退：非 API 路由返回 index.html，API 路由返回 404
 app.get('*', (req, res) => {
-  if (!req.path.startsWith('/api/')) {
-    res.sendFile(join(clientDist, 'index.html'))
+  if (req.path.startsWith('/api/')) {
+    return res.status(404).json({ success: false, message: 'API not found' })
   }
+  res.sendFile(join(clientDist, 'index.html'))
 })
 
 app.listen(PORT, () => {
