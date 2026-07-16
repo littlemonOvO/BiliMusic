@@ -292,6 +292,7 @@ router.get('/stream', async (req, res) => {
         headers,
         responseType: 'stream',
         timeout: 30000,
+        validateStatus: (s) => s >= 200 && s < 400, // 接受 2xx/3xx，416 等会抛异常被 catch
       })
 
       let chunkSize = 0
@@ -346,12 +347,18 @@ router.get('/stream', async (req, res) => {
     // 后续段：B站中断后用 Range 请求从断点继续
     // 注意：不能仅靠 result.error 判断是否完整，B站 CDN 有时提前 end 但数据不完整
     while (downloadedBytes < expectedLength && chunkIndex < MAX_CHUNKS) {
-      const result = await downloadChunk(downloadedBytes)
-      downloadedBytes += result.size
+      try {
+        const result = await downloadChunk(downloadedBytes)
+        downloadedBytes += result.size
 
-      if (result.error) {
-        console.log(`[Cache] INTERRUPT  chunk=${chunkIndex}  downloaded=${downloadedBytes}/${expectedLength}  error=${result.error.message}`)
+        if (result.error) {
+          console.log(`[Cache] INTERRUPT  chunk=${chunkIndex}  downloaded=${downloadedBytes}/${expectedLength}  error=${result.error.message}`)
+          hadError = true
+        }
+      } catch (chunkErr) {
+        console.log(`[Cache] CHUNK-ERROR  chunk=${chunkIndex}  downloaded=${downloadedBytes}/${expectedLength}  error=${chunkErr.message}`)
         hadError = true
+        break
       }
     }
 
@@ -393,6 +400,7 @@ router.get('/stream', async (req, res) => {
       }
     })
   } catch (err) {
+    console.error(`[Cache] STREAM ERROR: ${err.message}`)
     if (!res.headersSent) {
       res.status(500).json({ success: false, message: '音频流获取失败' })
     }
@@ -449,27 +457,32 @@ async function downloadToCache(url, dataPath, metaPath, songTitle = '', cacheHas
     const headers = { ...BILIBILI_HEADERS, Range: `bytes=${downloadedBytes}-` }
     console.log(`[Cache] DL-RESUME  chunk=${chunkIndex}  bytes=${downloadedBytes}-  title="${songTitle}"  file=${cacheHash}`)
 
-    const resp = await axios.get(url, {
-      headers,
-      responseType: 'stream',
-      timeout: 30000,
-    })
-
-    let chunkSize = 0
-    const result = await new Promise((resolve) => {
-      resp.data.on('data', (chunk) => {
-        chunkSize += chunk.length
-        writeStream.write(chunk)
+    try {
+      const resp = await axios.get(url, {
+        headers,
+        responseType: 'stream',
+        timeout: 30000,
+        validateStatus: (s) => s >= 200 && s < 400,
       })
-      resp.data.on('end', () => resolve({ size: chunkSize, error: null }))
-      resp.data.on('error', (err) => resolve({ size: chunkSize, error: err }))
-    })
-    downloadedBytes += result.size
 
-    if (result.error) {
-      console.log(`[Cache] DL-INTERRUPT  chunk=${chunkIndex}  downloaded=${downloadedBytes}/${expectedLength}  title="${songTitle}"  file=${cacheHash}`)
+      let chunkSize = 0
+      const result = await new Promise((resolve) => {
+        resp.data.on('data', (chunk) => {
+          chunkSize += chunk.length
+          writeStream.write(chunk)
+        })
+        resp.data.on('end', () => resolve({ size: chunkSize, error: null }))
+        resp.data.on('error', (err) => resolve({ size: chunkSize, error: err }))
+      })
+      downloadedBytes += result.size
+
+      if (result.error) {
+        console.log(`[Cache] DL-INTERRUPT  chunk=${chunkIndex}  downloaded=${downloadedBytes}/${expectedLength}  title="${songTitle}"  file=${cacheHash}`)
+      }
+    } catch (chunkErr) {
+      console.log(`[Cache] DL-CHUNK-ERROR  chunk=${chunkIndex}  downloaded=${downloadedBytes}/${expectedLength}  error=${chunkErr.message}  title="${songTitle}"  file=${cacheHash}`)
+      break
     }
-    // 无论 error 与否，循环条件 downloadedBytes < expectedLength 会判断是否继续
   }
 
   writeStream.end()
