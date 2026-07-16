@@ -318,7 +318,7 @@ router.get('/stream', async (req, res) => {
     }
 
     // 循环下载直到完整或达到最大分块数
-    let streamError = null
+    let hadError = false
 
     // 第一段：复用已打开的 response
     {
@@ -351,10 +351,7 @@ router.get('/stream', async (req, res) => {
 
       if (result.error) {
         console.log(`[Cache] INTERRUPT  chunk=${chunkIndex}  downloaded=${downloadedBytes}/${expectedLength}  error=${result.error.message}`)
-        streamError = result.error
-      } else {
-        // end 触发但可能数据不完整，继续检查 downloadedBytes
-        streamError = null
+        hadError = true
       }
     }
 
@@ -362,7 +359,7 @@ router.get('/stream', async (req, res) => {
     passThrough.end()
     writeStream.end()
 
-    if (!clientClosed && streamError && downloadedBytes < expectedLength) {
+    if (!clientClosed && hadError && downloadedBytes < expectedLength) {
       // 仍有数据缺失，关闭客户端连接
       if (!res.writableEnded) res.end()
     }
@@ -446,8 +443,8 @@ async function downloadToCache(url, dataPath, metaPath, songTitle = '', cacheHas
   }
 
   // 后续段：断点续传
-  let streamError = true
-  while (streamError && downloadedBytes < expectedLength && chunkIndex < MAX_CHUNKS) {
+  // 注意：不能仅靠 result.error 判断是否完整，B站 CDN 有时提前 end 但数据不完整
+  while (expectedLength && downloadedBytes < expectedLength && chunkIndex < MAX_CHUNKS) {
     chunkIndex++
     const headers = { ...BILIBILI_HEADERS, Range: `bytes=${downloadedBytes}-` }
     console.log(`[Cache] DL-RESUME  chunk=${chunkIndex}  bytes=${downloadedBytes}-  title="${songTitle}"  file=${cacheHash}`)
@@ -471,10 +468,8 @@ async function downloadToCache(url, dataPath, metaPath, songTitle = '', cacheHas
 
     if (result.error) {
       console.log(`[Cache] DL-INTERRUPT  chunk=${chunkIndex}  downloaded=${downloadedBytes}/${expectedLength}  title="${songTitle}"  file=${cacheHash}`)
-      streamError = true
-    } else {
-      streamError = false
     }
+    // 无论 error 与否，循环条件 downloadedBytes < expectedLength 会判断是否继续
   }
 
   writeStream.end()
