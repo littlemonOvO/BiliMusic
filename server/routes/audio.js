@@ -3,6 +3,7 @@ import axios from 'axios'
 import crypto from 'crypto'
 import fs from 'fs'
 import path from 'path'
+import { PassThrough } from 'stream'
 import { fileURLToPath } from 'url'
 import { getAudioUrl } from '../services/bilibili.js'
 
@@ -227,7 +228,7 @@ router.get('/stream', async (req, res) => {
     const contentType = response.headers['content-type'] || 'audio/mp4'
     const expectedLength = parseInt(response.headers['content-length'])
 
-    // 响应头（用 200 返回完整流，客户端可缓冲后播放）
+    // 响应头
     res.setHeader('Content-Type', contentType)
     if (expectedLength) {
       res.setHeader('Content-Length', expectedLength)
@@ -239,34 +240,33 @@ router.get('/stream', async (req, res) => {
     const tmpPath = `${dataPath}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`
     const writeStream = fs.createWriteStream(tmpPath)
 
-    // 将 B站数据流同时 pipe 到客户端和磁盘
-    response.data.on('data', (chunk) => {
-      writeStream.write(chunk)
-    })
+    // 用 PassThrough 正确分流：B站流 -> PassThrough -> 客户端 + 磁盘
+    // PassThrough 自动处理背压，避免 on('data') + pipe() 并用导致的冲突
+    const passThrough = new PassThrough()
+    response.data.pipe(passThrough)
+    passThrough.pipe(res)
+    passThrough.pipe(writeStream)
 
-    // 客户端提前断开时清理
+    // 客户端断开时：只停止给客户端的 pipe，但让 B站下载继续写入磁盘
+    let clientClosed = false
     req.on('close', () => {
-      response.data.destroy()
-      writeStream.destroy()
-      if (fs.existsSync(tmpPath)) {
-        try { fs.unlinkSync(tmpPath) } catch {}
-      }
+      clientClosed = true
+      // 只 unpipe 客户端，不 destroy B站源流，让缓存下载继续
+      passThrough.unpipe(res)
     })
 
-    // 流结束时：完成磁盘写入，重命名为正式缓存
+    // B站流结束：完成磁盘写入，保存缓存
     response.data.on('end', () => {
       writeStream.end()
     })
 
+    // B站流错误（如 CDN 限流中断）：保留已下载的部分作为缓存
     response.data.on('error', (err) => {
       console.error(`[Cache] STREAM ERROR: ${err.message}`)
-      writeStream.destroy()
-      if (fs.existsSync(tmpPath)) {
-        try { fs.unlinkSync(tmpPath) } catch {}
-      }
-      if (!res.headersSent) {
+      writeStream.end()
+      if (!clientClosed && !res.headersSent) {
         res.status(500).json({ success: false, message: '音频流获取失败' })
-      } else {
+      } else if (!clientClosed) {
         res.end()
       }
     })
@@ -293,14 +293,10 @@ router.get('/stream', async (req, res) => {
 
     writeStream.on('error', (err) => {
       console.error(`[Cache] WRITE ERROR: ${err.message}`)
-      response.data.destroy()
       if (fs.existsSync(tmpPath)) {
         try { fs.unlinkSync(tmpPath) } catch {}
       }
     })
-
-    // pipe 到客户端
-    response.data.pipe(res)
   } catch (err) {
     if (!res.headersSent) {
       res.status(500).json({ success: false, message: '音频流获取失败' })
