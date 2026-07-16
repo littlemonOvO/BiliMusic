@@ -267,7 +267,7 @@ router.get('/stream', async (req, res) => {
     })
 
     // 分块下载：B站 CDN 中断后用 Range 请求从断点继续
-    const MAX_CHUNKS = 5
+    const MAX_CHUNKS = 10
     let downloadedBytes = 0
     let chunkIndex = 0
 
@@ -394,27 +394,87 @@ router.get('/stream', async (req, res) => {
 })
 
 // 完整下载到磁盘缓存（用于 seek 场景 / 后台补全不完整缓存）
+// 支持 B站 CDN 中断后断点续传
 async function downloadToCache(url, dataPath, metaPath, songTitle = '', cacheHash = '', isBackground = false) {
-  const response = await axios.get(url, {
-    headers: BILIBILI_HEADERS,
-    responseType: 'stream',
-    timeout: 30000,
-  })
-
-  const contentType = response.headers['content-type'] || 'audio/mp4'
-  const expectedLength = parseInt(response.headers['content-length'])
-
   const tmpPath = `${dataPath}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`
   const writeStream = fs.createWriteStream(tmpPath)
 
-  await new Promise((resolve, reject) => {
-    response.data.pipe(writeStream)
-    response.data.on('error', reject)
-    writeStream.on('finish', resolve)
-    writeStream.on('error', reject)
-  })
+  let contentType = 'audio/mp4'
+  let expectedLength = 0
+  let downloadedBytes = 0
+  let chunkIndex = 0
+  const MAX_CHUNKS = 10
 
-  const actualSize = fs.statSync(tmpPath).size
+  // 第一段
+  {
+    const response = await axios.get(url, {
+      headers: BILIBILI_HEADERS,
+      responseType: 'stream',
+      timeout: 30000,
+    })
+    contentType = response.headers['content-type'] || 'audio/mp4'
+    expectedLength = parseInt(response.headers['content-length'])
+
+    let chunkSize = 0
+    const result = await new Promise((resolve) => {
+      response.data.on('data', (chunk) => {
+        chunkSize += chunk.length
+        writeStream.write(chunk)
+      })
+      response.data.on('end', () => resolve({ size: chunkSize, error: null }))
+      response.data.on('error', (err) => resolve({ size: chunkSize, error: err }))
+    })
+    downloadedBytes += result.size
+    chunkIndex = 1
+
+    if (!result.error) {
+      // 第一段就完整了
+      writeStream.end()
+      await new Promise((r) => writeStream.on('finish', r))
+      return finishDownload(tmpPath, dataPath, metaPath, contentType, expectedLength, downloadedBytes, songTitle, cacheHash, isBackground)
+    }
+    console.log(`[Cache] DL-INTERRUPT  chunk=1  downloaded=${downloadedBytes}/${expectedLength}  title="${songTitle}"  file=${cacheHash}`)
+  }
+
+  // 后续段：断点续传
+  let streamError = true
+  while (streamError && downloadedBytes < expectedLength && chunkIndex < MAX_CHUNKS) {
+    chunkIndex++
+    const headers = { ...BILIBILI_HEADERS, Range: `bytes=${downloadedBytes}-` }
+    console.log(`[Cache] DL-RESUME  chunk=${chunkIndex}  bytes=${downloadedBytes}-  title="${songTitle}"  file=${cacheHash}`)
+
+    const resp = await axios.get(url, {
+      headers,
+      responseType: 'stream',
+      timeout: 30000,
+    })
+
+    let chunkSize = 0
+    const result = await new Promise((resolve) => {
+      resp.data.on('data', (chunk) => {
+        chunkSize += chunk.length
+        writeStream.write(chunk)
+      })
+      resp.data.on('end', () => resolve({ size: chunkSize, error: null }))
+      resp.data.on('error', (err) => resolve({ size: chunkSize, error: err }))
+    })
+    downloadedBytes += result.size
+
+    if (result.error) {
+      console.log(`[Cache] DL-INTERRUPT  chunk=${chunkIndex}  downloaded=${downloadedBytes}/${expectedLength}  title="${songTitle}"  file=${cacheHash}`)
+      streamError = true
+    } else {
+      streamError = false
+    }
+  }
+
+  writeStream.end()
+  await new Promise((r) => writeStream.on('finish', r))
+  return finishDownload(tmpPath, dataPath, metaPath, contentType, expectedLength, downloadedBytes, songTitle, cacheHash, isBackground)
+}
+
+// 完成下载：重命名文件，写入元数据
+function finishDownload(tmpPath, dataPath, metaPath, contentType, expectedLength, actualSize, songTitle, cacheHash, isBackground) {
   const isComplete = !expectedLength || actualSize >= expectedLength
 
   if (!isComplete && !isBackground) {
@@ -431,7 +491,7 @@ async function downloadToCache(url, dataPath, metaPath, songTitle = '', cacheHas
   writeMeta(metaPath, {
     contentType,
     size: actualSize,
-    url: url.slice(0, 100),
+    url: '',
     createdAt: Date.now(),
     complete: isComplete,
   })
