@@ -127,7 +127,9 @@ function cleanCache() {
   }
 }
 
-// 音频流代理：完整下载到磁盘缓存，服务端用 fs.createReadStream 处理 Range 请求
+// 音频流代理：
+// - 缓存命中：从磁盘读取，支持 Range 请求
+// - 缓存未命中：从 B站 CDN 边下载边响应客户端，同时写入磁盘缓存
 // 解决 B站 CDN 对单连接数据量限制导致的中途断流问题
 router.get('/stream', async (req, res) => {
   try {
@@ -143,106 +145,211 @@ router.get('/stream', async (req, res) => {
 
     const { dataPath, metaPath } = getCachePath(url)
 
-    // 检查缓存是否有效，记录缓存命中/未命中日志
+    // 检查缓存是否有效
     const cacheValid = isCacheValid(dataPath, metaPath)
     const oldMeta = readMeta(metaPath)
 
+    // 解析 Range 请求
+    const rangeHeader = req.headers.range
+    let rangeStart = 0
+    let hasRange = false
+    if (rangeHeader) {
+      const match = /bytes=(\d+)-(\d*)/.exec(rangeHeader)
+      if (match) {
+        rangeStart = parseInt(match[1])
+        hasRange = true
+      }
+    }
+
     if (cacheValid) {
+      // ===== 缓存命中：从磁盘读取，支持 Range =====
       const age = Date.now() - fs.statSync(dataPath).mtimeMs
       console.log(`[Cache] HIT  age=${formatAge(age)}  size=${oldMeta?.size || '?'}  url=${url.slice(0, 80)}`)
-    } else {
-      if (oldMeta) {
-        const age = Date.now() - (oldMeta.createdAt || 0)
-        console.log(`[Cache] MISS age=${formatAge(age)}  reason=invalid  url=${url.slice(0, 80)}`)
+
+      const meta = readMeta(metaPath)
+      const contentType = meta?.contentType || 'audio/mp4'
+      const fileSize = fs.statSync(dataPath).size
+
+      if (hasRange && rangeStart < fileSize) {
+        const end = rangeHeader.match(/bytes=(\d+)-(\d*)/)[2]
+          ? parseInt(rangeHeader.match(/bytes=(\d+)-(\d*)/)[2])
+          : fileSize - 1
+        res.status(206)
+        res.setHeader('Content-Range', `bytes ${rangeStart}-${end}/${fileSize}`)
+        res.setHeader('Content-Length', end - rangeStart + 1)
+        res.setHeader('Content-Type', contentType)
+        res.setHeader('Accept-Ranges', 'bytes')
+        fs.createReadStream(dataPath, { start: rangeStart, end }).pipe(res)
       } else {
-        console.log(`[Cache] MISS age=N/A  reason=not_found  url=${url.slice(0, 80)}`)
+        res.setHeader('Content-Type', contentType)
+        res.setHeader('Content-Length', fileSize)
+        res.setHeader('Accept-Ranges', 'bytes')
+        fs.createReadStream(dataPath).pipe(res)
       }
+      return
+    }
 
-      // 下载到磁盘
-      const response = await axios.get(url, {
-        headers: BILIBILI_HEADERS,
-        responseType: 'stream',
-        timeout: 30000,
-      })
+    // ===== 缓存未命中 =====
+    if (oldMeta) {
+      const age = Date.now() - (oldMeta.createdAt || 0)
+      console.log(`[Cache] MISS age=${formatAge(age)}  reason=invalid  url=${url.slice(0, 80)}`)
+    } else {
+      console.log(`[Cache] MISS age=N/A  reason=not_found  url=${url.slice(0, 80)}`)
+    }
 
-      const contentType = response.headers['content-type'] || 'audio/mp4'
-      const expectedLength = parseInt(response.headers['content-length'])
+    // 如果客户端请求非零起点 Range（seek），无法从 B站流中途开始，
+    // 回退到先完整下载再从磁盘读取
+    if (hasRange && rangeStart > 0) {
+      await downloadToCache(url, dataPath, metaPath)
+      const meta = readMeta(metaPath)
+      const contentType = meta?.contentType || 'audio/mp4'
+      const fileSize = fs.statSync(dataPath).size
+      const end = rangeHeader.match(/bytes=(\d+)-(\d*)/)[2]
+        ? parseInt(rangeHeader.match(/bytes=(\d+)-(\d*)/)[2])
+        : fileSize - 1
+      res.status(206)
+      res.setHeader('Content-Range', `bytes ${rangeStart}-${end}/${fileSize}`)
+      res.setHeader('Content-Length', end - rangeStart + 1)
+      res.setHeader('Content-Type', contentType)
+      res.setHeader('Accept-Ranges', 'bytes')
+      fs.createReadStream(dataPath, { start: rangeStart, end }).pipe(res)
+      return
+    }
 
-      // 先写到临时文件，下载完成后重命名（避免半截文件被当作有效缓存）
-      // 使用 PID + 随机数确保唯一，防止并发请求写入同一文件
-      const tmpPath = `${dataPath}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`
-      const writeStream = fs.createWriteStream(tmpPath)
+    // 从 B站 CDN 边下载边响应客户端 + 同时写入磁盘缓存
+    console.log(`[Cache] STREAM  url=${url.slice(0, 80)}`)
+    const response = await axios.get(url, {
+      headers: BILIBILI_HEADERS,
+      responseType: 'stream',
+      timeout: 30000,
+    })
 
-      await new Promise((resolve, reject) => {
-        response.data.pipe(writeStream)
-        response.data.on('error', reject)
-        writeStream.on('finish', resolve)
-        writeStream.on('error', reject)
-      })
+    const contentType = response.headers['content-type'] || 'audio/mp4'
+    const expectedLength = parseInt(response.headers['content-length'])
 
-      // 校验完整性
+    // 响应头（用 200 返回完整流，客户端可缓冲后播放）
+    res.setHeader('Content-Type', contentType)
+    if (expectedLength) {
+      res.setHeader('Content-Length', expectedLength)
+    }
+    res.setHeader('Accept-Ranges', 'bytes')
+    res.status(200)
+
+    // 同时写入临时文件用于缓存
+    const tmpPath = `${dataPath}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`
+    const writeStream = fs.createWriteStream(tmpPath)
+
+    // 将 B站数据流同时 pipe 到客户端和磁盘
+    response.data.on('data', (chunk) => {
+      writeStream.write(chunk)
+    })
+
+    // 客户端提前断开时清理
+    req.on('close', () => {
+      response.data.destroy()
+      writeStream.destroy()
+      if (fs.existsSync(tmpPath)) {
+        try { fs.unlinkSync(tmpPath) } catch {}
+      }
+    })
+
+    // 流结束时：完成磁盘写入，重命名为正式缓存
+    response.data.on('end', () => {
+      writeStream.end()
+    })
+
+    response.data.on('error', (err) => {
+      console.error(`[Cache] STREAM ERROR: ${err.message}`)
+      writeStream.destroy()
+      if (fs.existsSync(tmpPath)) {
+        try { fs.unlinkSync(tmpPath) } catch {}
+      }
+      if (!res.headersSent) {
+        res.status(500).json({ success: false, message: '音频流获取失败' })
+      } else {
+        res.end()
+      }
+    })
+
+    writeStream.on('finish', () => {
       const actualSize = fs.statSync(tmpPath).size
       if (expectedLength && actualSize < expectedLength) {
-        fs.unlinkSync(tmpPath)
-        throw new Error(`数据不完整: ${actualSize}/${expectedLength}`)
+        console.log(`[Cache] INCOMPLETE: ${actualSize}/${expectedLength}, keeping partial cache`)
       }
-
-      // 重命名为正式缓存文件（若已被其他请求完成则跳过）
       try {
         fs.renameSync(tmpPath, dataPath)
       } catch {
-        // dataPath 已存在（其他并发请求已完成），清理自己的临时文件
         if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath)
       }
-
-      // 写入元数据
       writeMeta(metaPath, {
         contentType,
         size: actualSize,
         url: url.slice(0, 100),
         createdAt: Date.now(),
       })
-
       console.log(`[Cache] STORED  size=${actualSize}  url=${url.slice(0, 80)}`)
-
-      // 异步清理缓存（不阻塞响应）
       setImmediate(cleanCache)
-    }
+    })
 
-    // 读取缓存元数据
-    const meta = readMeta(metaPath)
-    const contentType = meta?.contentType || 'audio/mp4'
-    const fileSize = fs.statSync(dataPath).size
-
-    // 处理 Range 请求（fs.createReadStream 原生支持）
-    const range = req.headers.range
-    if (range) {
-      const match = /bytes=(\d+)-(\d*)/.exec(range)
-      if (match) {
-        const start = parseInt(match[1])
-        const end = match[2] ? parseInt(match[2]) : fileSize - 1
-        if (start < fileSize) {
-          res.status(206)
-          res.setHeader('Content-Range', `bytes ${start}-${end}/${fileSize}`)
-          res.setHeader('Content-Length', end - start + 1)
-          res.setHeader('Content-Type', contentType)
-          res.setHeader('Accept-Ranges', 'bytes')
-          fs.createReadStream(dataPath, { start, end }).pipe(res)
-          return
-        }
+    writeStream.on('error', (err) => {
+      console.error(`[Cache] WRITE ERROR: ${err.message}`)
+      response.data.destroy()
+      if (fs.existsSync(tmpPath)) {
+        try { fs.unlinkSync(tmpPath) } catch {}
       }
-    }
+    })
 
-    // 返回完整文件
-    res.setHeader('Content-Type', contentType)
-    res.setHeader('Content-Length', fileSize)
-    res.setHeader('Accept-Ranges', 'bytes')
-    fs.createReadStream(dataPath).pipe(res)
+    // pipe 到客户端
+    response.data.pipe(res)
   } catch (err) {
     if (!res.headersSent) {
       res.status(500).json({ success: false, message: '音频流获取失败' })
     }
   }
 })
+
+// 完整下载到磁盘缓存（用于 seek 场景，必须先完整下载）
+async function downloadToCache(url, dataPath, metaPath) {
+  const response = await axios.get(url, {
+    headers: BILIBILI_HEADERS,
+    responseType: 'stream',
+    timeout: 30000,
+  })
+
+  const contentType = response.headers['content-type'] || 'audio/mp4'
+  const expectedLength = parseInt(response.headers['content-length'])
+
+  const tmpPath = `${dataPath}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`
+  const writeStream = fs.createWriteStream(tmpPath)
+
+  await new Promise((resolve, reject) => {
+    response.data.pipe(writeStream)
+    response.data.on('error', reject)
+    writeStream.on('finish', resolve)
+    writeStream.on('error', reject)
+  })
+
+  const actualSize = fs.statSync(tmpPath).size
+  if (expectedLength && actualSize < expectedLength) {
+    fs.unlinkSync(tmpPath)
+    throw new Error(`数据不完整: ${actualSize}/${expectedLength}`)
+  }
+
+  try {
+    fs.renameSync(tmpPath, dataPath)
+  } catch {
+    if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath)
+  }
+
+  writeMeta(metaPath, {
+    contentType,
+    size: actualSize,
+    url: url.slice(0, 100),
+    createdAt: Date.now(),
+  })
+
+  console.log(`[Cache] STORED  size=${actualSize}  url=${url.slice(0, 80)}`)
+  setImmediate(cleanCache)
+}
 
 export default router
