@@ -339,7 +339,7 @@ router.get('/stream', async (req, res) => {
       chunkIndex = 1
       if (result.error) {
         console.log(`[Cache] INTERRUPT  chunk=1  downloaded=${downloadedBytes}/${expectedLength}  error=${result.error.message}`)
-        streamError = result.error
+        hadError = true
       }
     }
 
