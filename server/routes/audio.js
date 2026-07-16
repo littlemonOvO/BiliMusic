@@ -405,17 +405,18 @@ router.get('/stream', async (req, res) => {
 
     log(`DOWNLOAD-END  downloaded=${downloadedBytes}/${expectedLength}  chunks=${chunkIndex}  hadError=${hadError}  clientClosed=${clientClosed}`)
 
-    // 所有分块下载完成，结束 passThrough 和 writeStream
-    passThrough.end()
-    writeStream.end()
-
+    // 结束 passThrough，pipe 会自动 end writeStream 和 res
+    // 注意：不要手动 writeStream.end()，否则 PassThrough 缓冲里剩余数据会丢失
+    // （pipe 的 end 是异步触发的，同步 end writeStream 会让它提前进入 ended 状态）
     if (!clientClosed && hadError && downloadedBytes < expectedLength) {
-      // 仍有数据缺失，关闭客户端连接
+      // 数据不完整时，先 unpipe 让 PassThrough 剩余数据继续写磁盘，并明确 end res
+      passThrough.unpipe(res)
       if (!res.writableEnded) {
         log(`CLOSING-CLIENT  reason=incomplete_data  downloaded=${downloadedBytes}/${expectedLength}`)
         res.end()
       }
     }
+    passThrough.end()
 
     writeStream.on('finish', () => {
       const actualSize = fs.statSync(tmpPath).size
