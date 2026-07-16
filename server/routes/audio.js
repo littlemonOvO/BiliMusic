@@ -61,9 +61,10 @@ if (!fs.existsSync(CACHE_DIR)) {
   fs.mkdirSync(CACHE_DIR, { recursive: true })
 }
 
-// URL -> 缓存文件名（MD5 哈希，避免非法字符）
-function getCachePath(url) {
-  const hash = crypto.createHash('md5').update(url).digest('hex')
+// 缓存键 -> 文件路径（优先用 bvid，保证同一首歌缓存键不变）
+function getCachePath(url, bvid) {
+  const key = bvid || url
+  const hash = crypto.createHash('md5').update(key).digest('hex')
   return {
     dataPath: path.join(CACHE_DIR, `${hash}.dat`),
     metaPath: path.join(CACHE_DIR, `${hash}.meta`),
@@ -94,14 +95,15 @@ function formatAge(ms) {
   return `${min}m`
 }
 
-// 检查缓存是否有效（文件存在且大小匹配，不设 TTL）
-function isCacheValid(dataPath, metaPath) {
-  if (!fs.existsSync(dataPath) || !fs.existsSync(metaPath)) return false
+// 检查缓存是否有效（文件存在且大小匹配）
+// 返回 { valid, complete } -- valid 表示可播放，complete 表示已完整下载
+function checkCache(dataPath, metaPath) {
+  if (!fs.existsSync(dataPath) || !fs.existsSync(metaPath)) return { valid: false, complete: false }
   const stats = fs.statSync(dataPath)
   const meta = readMeta(metaPath)
-  if (!meta) return false
-  if (stats.size !== meta.size) return false
-  return true
+  if (!meta) return { valid: false, complete: false }
+  if (stats.size !== meta.size) return { valid: false, complete: false }
+  return { valid: true, complete: meta.complete !== false }
 }
 
 // LRU 清理：超过上限时删最旧的
@@ -134,7 +136,7 @@ function cleanCache() {
 // 解决 B站 CDN 对单连接数据量限制导致的中途断流问题
 router.get('/stream', async (req, res) => {
   try {
-    const { url, title } = req.query
+    const { url, title, bvid } = req.query
     const songTitle = title ? decodeURIComponent(title) : ''
 
     if (!url) {
@@ -145,11 +147,11 @@ router.get('/stream', async (req, res) => {
       return res.status(403).json({ success: false, message: '不允许的 URL 域名' })
     }
 
-    const { dataPath, metaPath } = getCachePath(url)
+    const { dataPath, metaPath } = getCachePath(url, bvid)
     const cacheHash = path.basename(dataPath, '.dat')
 
     // 检查缓存是否有效
-    const cacheValid = isCacheValid(dataPath, metaPath)
+    const { valid: cacheValid, complete: cacheComplete } = checkCache(dataPath, metaPath)
     const oldMeta = readMeta(metaPath)
 
     // 解析 Range 请求
@@ -167,11 +169,20 @@ router.get('/stream', async (req, res) => {
     if (cacheValid) {
       // ===== 缓存命中：从磁盘读取，支持 Range =====
       const age = Date.now() - fs.statSync(dataPath).mtimeMs
-      console.log(`[Cache] HIT  age=${formatAge(age)}  size=${oldMeta?.size || '?'}  title="${songTitle}"  file=${cacheHash}`)
+      const tag = cacheComplete ? 'HIT' : 'HIT-PARTIAL'
+      console.log(`[Cache] ${tag}  age=${formatAge(age)}  size=${oldMeta?.size || '?'}  title="${songTitle}"  file=${cacheHash}`)
 
       const meta = readMeta(metaPath)
       const contentType = meta?.contentType || 'audio/mp4'
       const fileSize = fs.statSync(dataPath).size
+
+      // 缓存不完整时，后台异步补全下载
+      if (!cacheComplete) {
+        console.log(`[Cache] BG-FETCH  title="${songTitle}"  file=${cacheHash}`)
+        downloadToCache(url, dataPath, metaPath, songTitle, cacheHash, true).catch((err) => {
+          console.error(`[Cache] BG-FETCH FAILED: ${err.message}  title="${songTitle}"  file=${cacheHash}`)
+        })
+      }
 
       if (hasRange && rangeStart < fileSize) {
         const end = rangeHeader.match(/bytes=(\d+)-(\d*)/)[2]
@@ -203,7 +214,7 @@ router.get('/stream', async (req, res) => {
     // 如果客户端请求非零起点 Range（seek），无法从 B站流中途开始，
     // 回退到先完整下载再从磁盘读取
     if (hasRange && rangeStart > 0) {
-      await downloadToCache(url, dataPath, metaPath, songTitle, cacheHash)
+      await downloadToCache(url, dataPath, metaPath, songTitle, cacheHash, false)
       const meta = readMeta(metaPath)
       const contentType = meta?.contentType || 'audio/mp4'
       const fileSize = fs.statSync(dataPath).size
@@ -275,7 +286,8 @@ router.get('/stream', async (req, res) => {
 
     writeStream.on('finish', () => {
       const actualSize = fs.statSync(tmpPath).size
-      if (expectedLength && actualSize < expectedLength) {
+      const isComplete = !expectedLength || actualSize >= expectedLength
+      if (!isComplete) {
         console.log(`[Cache] INCOMPLETE: ${actualSize}/${expectedLength}, keeping partial cache`)
       }
       try {
@@ -288,8 +300,9 @@ router.get('/stream', async (req, res) => {
         size: actualSize,
         url: url.slice(0, 100),
         createdAt: Date.now(),
+        complete: isComplete,
       })
-      console.log(`[Cache] STORED  size=${actualSize}  title="${songTitle}"  file=${cacheHash}`)
+      console.log(`[Cache] STORED  size=${actualSize}  complete=${isComplete}  title="${songTitle}"  file=${cacheHash}`)
       setImmediate(cleanCache)
     })
 
@@ -306,8 +319,8 @@ router.get('/stream', async (req, res) => {
   }
 })
 
-// 完整下载到磁盘缓存（用于 seek 场景，必须先完整下载）
-async function downloadToCache(url, dataPath, metaPath, songTitle = '', cacheHash = '') {
+// 完整下载到磁盘缓存（用于 seek 场景 / 后台补全不完整缓存）
+async function downloadToCache(url, dataPath, metaPath, songTitle = '', cacheHash = '', isBackground = false) {
   const response = await axios.get(url, {
     headers: BILIBILI_HEADERS,
     responseType: 'stream',
@@ -328,7 +341,9 @@ async function downloadToCache(url, dataPath, metaPath, songTitle = '', cacheHas
   })
 
   const actualSize = fs.statSync(tmpPath).size
-  if (expectedLength && actualSize < expectedLength) {
+  const isComplete = !expectedLength || actualSize >= expectedLength
+
+  if (!isComplete && !isBackground) {
     fs.unlinkSync(tmpPath)
     throw new Error(`数据不完整: ${actualSize}/${expectedLength}`)
   }
@@ -344,9 +359,11 @@ async function downloadToCache(url, dataPath, metaPath, songTitle = '', cacheHas
     size: actualSize,
     url: url.slice(0, 100),
     createdAt: Date.now(),
+    complete: isComplete,
   })
 
-  console.log(`[Cache] STORED  size=${actualSize}  title="${songTitle}"  file=${cacheHash}`)
+  const tag = isBackground ? 'BG-FETCH' : 'STORED'
+  console.log(`[Cache] ${tag}  size=${actualSize}  complete=${isComplete}  title="${songTitle}"  file=${cacheHash}`)
   setImmediate(cleanCache)
 }
 

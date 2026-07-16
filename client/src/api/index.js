@@ -16,9 +16,11 @@ export function getAudioUrl(bvid) {
 }
 
 // 构建音频流代理地址
-export function getAudioStreamUrl(originalUrl, title) {
-  const titleParam = title ? `&title=${encodeURIComponent(title)}` : ''
-  return `/api/audio/stream?url=${encodeURIComponent(originalUrl)}${titleParam}`
+export function getAudioStreamUrl(originalUrl, title, bvid) {
+  const params = new URLSearchParams({ url: originalUrl })
+  if (title) params.set('title', title)
+  if (bvid) params.set('bvid', bvid)
+  return `/api/audio/stream?${params.toString()}`
 }
 
 // 构建封面图代理地址（避免 B站防盗链）

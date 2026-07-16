@@ -42,7 +42,7 @@ export const usePlayerStore = defineStore('player', () => {
           ...song,
           title: song.title || title,
           cover: cover || song.cover,
-          audioStreamUrl: getAudioStreamUrl(audioUrl, song.title),
+          audioStreamUrl: getAudioStreamUrl(audioUrl, song.title, song.bvid),
         }
         isPlaying.value = true
       } else {
