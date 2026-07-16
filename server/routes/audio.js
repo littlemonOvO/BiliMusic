@@ -1,4 +1,4 @@
-﻿import { Router } from 'express'
+﻿﻿import { Router } from 'express'
 import axios from 'axios'
 import crypto from 'crypto'
 import fs from 'fs'
@@ -344,7 +344,8 @@ router.get('/stream', async (req, res) => {
     }
 
     // 后续段：B站中断后用 Range 请求从断点继续
-    while (streamError && downloadedBytes < expectedLength && chunkIndex < MAX_CHUNKS) {
+    // 注意：不能仅靠 result.error 判断是否完整，B站 CDN 有时提前 end 但数据不完整
+    while (downloadedBytes < expectedLength && chunkIndex < MAX_CHUNKS) {
       const result = await downloadChunk(downloadedBytes)
       downloadedBytes += result.size
 
@@ -352,8 +353,8 @@ router.get('/stream', async (req, res) => {
         console.log(`[Cache] INTERRUPT  chunk=${chunkIndex}  downloaded=${downloadedBytes}/${expectedLength}  error=${result.error.message}`)
         streamError = result.error
       } else {
+        // end 触发但可能数据不完整，继续检查 downloadedBytes
         streamError = null
-        break
       }
     }
 
