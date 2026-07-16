@@ -16,8 +16,9 @@ export function getAudioUrl(bvid) {
 }
 
 // 构建音频流代理地址
-export function getAudioStreamUrl(originalUrl) {
-  return `/api/audio/stream?url=${encodeURIComponent(originalUrl)}`
+export function getAudioStreamUrl(originalUrl, title) {
+  const titleParam = title ? `&title=${encodeURIComponent(title)}` : ''
+  return `/api/audio/stream?url=${encodeURIComponent(originalUrl)}${titleParam}`
 }
 
 // 构建封面图代理地址（避免 B站防盗链）

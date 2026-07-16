@@ -1,4 +1,4 @@
-import { Router } from 'express'
+﻿import { Router } from 'express'
 import axios from 'axios'
 import crypto from 'crypto'
 import fs from 'fs'
@@ -134,7 +134,8 @@ function cleanCache() {
 // 解决 B站 CDN 对单连接数据量限制导致的中途断流问题
 router.get('/stream', async (req, res) => {
   try {
-    const { url } = req.query
+    const { url, title } = req.query
+    const songTitle = title ? decodeURIComponent(title) : ''
 
     if (!url) {
       return res.status(400).json({ success: false, message: '缺少 url 参数' })
@@ -165,7 +166,7 @@ router.get('/stream', async (req, res) => {
     if (cacheValid) {
       // ===== 缓存命中：从磁盘读取，支持 Range =====
       const age = Date.now() - fs.statSync(dataPath).mtimeMs
-      console.log(`[Cache] HIT  age=${formatAge(age)}  size=${oldMeta?.size || '?'}  url=${url.slice(0, 80)}`)
+      console.log(`[Cache] HIT  age=${formatAge(age)}  size=${oldMeta?.size || '?'}  title="${songTitle}"`)
 
       const meta = readMeta(metaPath)
       const contentType = meta?.contentType || 'audio/mp4'
@@ -193,15 +194,15 @@ router.get('/stream', async (req, res) => {
     // ===== 缓存未命中 =====
     if (oldMeta) {
       const age = Date.now() - (oldMeta.createdAt || 0)
-      console.log(`[Cache] MISS age=${formatAge(age)}  reason=invalid  url=${url.slice(0, 80)}`)
+      console.log(`[Cache] MISS age=${formatAge(age)}  reason=invalid  title="${songTitle}"`)
     } else {
-      console.log(`[Cache] MISS age=N/A  reason=not_found  url=${url.slice(0, 80)}`)
+      console.log(`[Cache] MISS age=N/A  reason=not_found  title="${songTitle}"`)
     }
 
     // 如果客户端请求非零起点 Range（seek），无法从 B站流中途开始，
     // 回退到先完整下载再从磁盘读取
     if (hasRange && rangeStart > 0) {
-      await downloadToCache(url, dataPath, metaPath)
+      await downloadToCache(url, dataPath, metaPath, songTitle)
       const meta = readMeta(metaPath)
       const contentType = meta?.contentType || 'audio/mp4'
       const fileSize = fs.statSync(dataPath).size
@@ -218,7 +219,7 @@ router.get('/stream', async (req, res) => {
     }
 
     // 从 B站 CDN 边下载边响应客户端 + 同时写入磁盘缓存
-    console.log(`[Cache] STREAM  url=${url.slice(0, 80)}`)
+    console.log(`[Cache] STREAM  title="${songTitle}"`)
     const response = await axios.get(url, {
       headers: BILIBILI_HEADERS,
       responseType: 'stream',
@@ -287,7 +288,7 @@ router.get('/stream', async (req, res) => {
         url: url.slice(0, 100),
         createdAt: Date.now(),
       })
-      console.log(`[Cache] STORED  size=${actualSize}  url=${url.slice(0, 80)}`)
+      console.log(`[Cache] STORED  size=${actualSize}  title="${songTitle}"`)
       setImmediate(cleanCache)
     })
 
@@ -305,7 +306,7 @@ router.get('/stream', async (req, res) => {
 })
 
 // 完整下载到磁盘缓存（用于 seek 场景，必须先完整下载）
-async function downloadToCache(url, dataPath, metaPath) {
+async function downloadToCache(url, dataPath, metaPath, songTitle = '') {
   const response = await axios.get(url, {
     headers: BILIBILI_HEADERS,
     responseType: 'stream',
@@ -344,7 +345,7 @@ async function downloadToCache(url, dataPath, metaPath) {
     createdAt: Date.now(),
   })
 
-  console.log(`[Cache] STORED  size=${actualSize}  url=${url.slice(0, 80)}`)
+  console.log(`[Cache] STORED  size=${actualSize}  title="${songTitle}"`)
   setImmediate(cleanCache)
 }
 
