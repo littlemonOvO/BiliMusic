@@ -146,6 +146,7 @@ router.get('/stream', async (req, res) => {
     }
 
     const { dataPath, metaPath } = getCachePath(url)
+    const cacheHash = path.basename(dataPath, '.dat')
 
     // 检查缓存是否有效
     const cacheValid = isCacheValid(dataPath, metaPath)
@@ -166,7 +167,7 @@ router.get('/stream', async (req, res) => {
     if (cacheValid) {
       // ===== 缓存命中：从磁盘读取，支持 Range =====
       const age = Date.now() - fs.statSync(dataPath).mtimeMs
-      console.log(`[Cache] HIT  age=${formatAge(age)}  size=${oldMeta?.size || '?'}  title="${songTitle}"`)
+      console.log(`[Cache] HIT  age=${formatAge(age)}  size=${oldMeta?.size || '?'}  title="${songTitle}"  file=${cacheHash}`)
 
       const meta = readMeta(metaPath)
       const contentType = meta?.contentType || 'audio/mp4'
@@ -194,15 +195,15 @@ router.get('/stream', async (req, res) => {
     // ===== 缓存未命中 =====
     if (oldMeta) {
       const age = Date.now() - (oldMeta.createdAt || 0)
-      console.log(`[Cache] MISS age=${formatAge(age)}  reason=invalid  title="${songTitle}"`)
+      console.log(`[Cache] MISS age=${formatAge(age)}  reason=invalid  title="${songTitle}"  file=${cacheHash}`)
     } else {
-      console.log(`[Cache] MISS age=N/A  reason=not_found  title="${songTitle}"`)
+      console.log(`[Cache] MISS age=N/A  reason=not_found  title="${songTitle}"  file=${cacheHash}`)
     }
 
     // 如果客户端请求非零起点 Range（seek），无法从 B站流中途开始，
     // 回退到先完整下载再从磁盘读取
     if (hasRange && rangeStart > 0) {
-      await downloadToCache(url, dataPath, metaPath, songTitle)
+      await downloadToCache(url, dataPath, metaPath, songTitle, cacheHash)
       const meta = readMeta(metaPath)
       const contentType = meta?.contentType || 'audio/mp4'
       const fileSize = fs.statSync(dataPath).size
@@ -219,7 +220,7 @@ router.get('/stream', async (req, res) => {
     }
 
     // 从 B站 CDN 边下载边响应客户端 + 同时写入磁盘缓存
-    console.log(`[Cache] STREAM  title="${songTitle}"`)
+    console.log(`[Cache] STREAM  title="${songTitle}"  file=${cacheHash}`)
     const response = await axios.get(url, {
       headers: BILIBILI_HEADERS,
       responseType: 'stream',
@@ -288,7 +289,7 @@ router.get('/stream', async (req, res) => {
         url: url.slice(0, 100),
         createdAt: Date.now(),
       })
-      console.log(`[Cache] STORED  size=${actualSize}  title="${songTitle}"`)
+      console.log(`[Cache] STORED  size=${actualSize}  title="${songTitle}"  file=${cacheHash}`)
       setImmediate(cleanCache)
     })
 
@@ -306,7 +307,7 @@ router.get('/stream', async (req, res) => {
 })
 
 // 完整下载到磁盘缓存（用于 seek 场景，必须先完整下载）
-async function downloadToCache(url, dataPath, metaPath, songTitle = '') {
+async function downloadToCache(url, dataPath, metaPath, songTitle = '', cacheHash = '') {
   const response = await axios.get(url, {
     headers: BILIBILI_HEADERS,
     responseType: 'stream',
@@ -345,7 +346,7 @@ async function downloadToCache(url, dataPath, metaPath, songTitle = '') {
     createdAt: Date.now(),
   })
 
-  console.log(`[Cache] STORED  size=${actualSize}  title="${songTitle}"`)
+  console.log(`[Cache] STORED  size=${actualSize}  title="${songTitle}"  file=${cacheHash}`)
   setImmediate(cleanCache)
 }
 
