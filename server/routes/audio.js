@@ -1,4 +1,4 @@
-﻿﻿import { Router } from 'express'
+import { Router } from 'express'
 import axios from 'axios'
 import crypto from 'crypto'
 import fs from 'fs'
@@ -138,15 +138,23 @@ function cleanCache() {
 // - 缓存未命中：从 B站 CDN 边下载边响应客户端，同时写入磁盘缓存
 // 解决 B站 CDN 对单连接数据量限制导致的中途断流问题
 router.get('/stream', async (req, res) => {
+  const reqId = Date.now() +(Math.random()*1000 | 0)
+  const log = (msg) => console.log(`[Cache:${reqId}] ${msg}`)
+
   try {
     const { url, title, bvid } = req.query
     const songTitle = title ? decodeURIComponent(title) : ''
+    const rangeHeader = req.headers.range
+
+    log(`REQUEST  title="${songTitle}"  bvid=${bvid || 'N/A'}  range=${rangeHeader || 'none'}  url=${url?.slice(0, 80)}...`)
 
     if (!url) {
+      log('REJECT  reason=missing_url')
       return res.status(400).json({ success: false, message: '缺少 url 参数' })
     }
 
     if (!isAllowedUrl(url)) {
+      log(`REJECT  reason=blocked_host  url=${url.slice(0, 80)}`)
       return res.status(403).json({ success: false, message: '不允许的 URL 域名' })
     }
 
@@ -158,7 +166,6 @@ router.get('/stream', async (req, res) => {
     const oldMeta = readMeta(metaPath)
 
     // 解析 Range 请求
-    const rangeHeader = req.headers.range
     let rangeStart = 0
     let hasRange = false
     if (rangeHeader) {
@@ -173,23 +180,25 @@ router.get('/stream', async (req, res) => {
       // ===== 缓存命中：从磁盘读取，支持 Range =====
       const age = Date.now() - fs.statSync(dataPath).mtimeMs
       const tag = cacheComplete ? 'HIT' : 'HIT-PARTIAL'
-      console.log(`[Cache] ${tag}  age=${formatAge(age)}  size=${oldMeta?.size || '?'}  title="${songTitle}"  file=${cacheHash}`)
+      const fileSize = fs.statSync(dataPath).size
+      log(`${tag}  age=${formatAge(age)}  size=${fileSize}  complete=${cacheComplete}  title="${songTitle}"  file=${cacheHash}`)
 
       const meta = readMeta(metaPath)
       const contentType = meta?.contentType || 'audio/mp4'
-      const fileSize = fs.statSync(dataPath).size
 
       // 缓存不完整时，后台异步补全下载（加锁防止并发）
       if (!cacheComplete && !bgFetchLocks.has(cacheHash)) {
         bgFetchLocks.add(cacheHash)
-        console.log(`[Cache] BG-FETCH  title="${songTitle}"  file=${cacheHash}`)
+        log(`BG-FETCH  title="${songTitle}"  file=${cacheHash}`)
         downloadToCache(url, dataPath, metaPath, songTitle, cacheHash, true)
           .catch((err) => {
-            console.error(`[Cache] BG-FETCH FAILED: ${err.message}  title="${songTitle}"  file=${cacheHash}`)
+            log(`BG-FETCH FAILED: ${err.message}  title="${songTitle}"  file=${cacheHash}`)
           })
           .finally(() => {
             bgFetchLocks.delete(cacheHash)
           })
+      } else if (!cacheComplete && bgFetchLocks.has(cacheHash)) {
+        log(`BG-FETCH SKIP (locked)  title="${songTitle}"  file=${cacheHash}`)
       }
 
       if (hasRange && rangeStart < fileSize) {
@@ -201,11 +210,13 @@ router.get('/stream', async (req, res) => {
         res.setHeader('Content-Length', end - rangeStart + 1)
         res.setHeader('Content-Type', contentType)
         res.setHeader('Accept-Ranges', 'bytes')
+        log(`SERVE  range=${rangeStart}-${end}/${fileSize}  from=cache`)
         fs.createReadStream(dataPath, { start: rangeStart, end }).pipe(res)
       } else {
         res.setHeader('Content-Type', contentType)
         res.setHeader('Content-Length', fileSize)
         res.setHeader('Accept-Ranges', 'bytes')
+        log(`SERVE  full=${fileSize}  from=cache`)
         fs.createReadStream(dataPath).pipe(res)
       }
       return
@@ -214,14 +225,16 @@ router.get('/stream', async (req, res) => {
     // ===== 缓存未命中 =====
     if (oldMeta) {
       const age = Date.now() - (oldMeta.createdAt || 0)
-      console.log(`[Cache] MISS age=${formatAge(age)}  reason=invalid  title="${songTitle}"  file=${cacheHash}`)
+      const actualSize = fs.existsSync(dataPath) ? fs.statSync(dataPath).size : 0
+      log(`MISS  age=${formatAge(age)}  reason=invalid  metaSize=${oldMeta.size}  actualSize=${actualSize}  title="${songTitle}"  file=${cacheHash}`)
     } else {
-      console.log(`[Cache] MISS age=N/A  reason=not_found  title="${songTitle}"  file=${cacheHash}`)
+      log(`MISS  age=N/A  reason=not_found  title="${songTitle}"  file=${cacheHash}`)
     }
 
     // 如果客户端请求非零起点 Range（seek），无法从 B站流中途开始，
     // 回退到先完整下载再从磁盘读取
     if (hasRange && rangeStart > 0) {
+      log(`SEEK  rangeStart=${rangeStart}  falling back to downloadToCache`)
       await downloadToCache(url, dataPath, metaPath, songTitle, cacheHash, false)
       const meta = readMeta(metaPath)
       const contentType = meta?.contentType || 'audio/mp4'
@@ -234,21 +247,25 @@ router.get('/stream', async (req, res) => {
       res.setHeader('Content-Length', end - rangeStart + 1)
       res.setHeader('Content-Type', contentType)
       res.setHeader('Accept-Ranges', 'bytes')
+      log(`SERVE  range=${rangeStart}-${end}/${fileSize}  from=downloaded`)
       fs.createReadStream(dataPath, { start: rangeStart, end }).pipe(res)
       return
     }
 
     // 从 B站 CDN 边下载边响应客户端 + 同时写入磁盘缓存
     // B站 CDN 中断时自动从断点继续下载，拼接成完整流
-    console.log(`[Cache] STREAM  title="${songTitle}"  file=${cacheHash}`)
+    log(`STREAM  title="${songTitle}"  file=${cacheHash}  url=${url.slice(0, 80)}...`)
     const response = await axios.get(url, {
       headers: BILIBILI_HEADERS,
       responseType: 'stream',
       timeout: 30000,
+      validateStatus: (s) => s >= 200 && s < 400,
     })
 
     const contentType = response.headers['content-type'] || 'audio/mp4'
     const expectedLength = parseInt(response.headers['content-length'])
+
+    log(`BILI-RESP  status=${response.status}  contentLength=${expectedLength || 'N/A'}  contentType=${contentType}`)
 
     // 响应头
     res.setHeader('Content-Type', contentType)
@@ -272,6 +289,7 @@ router.get('/stream', async (req, res) => {
     req.on('close', () => {
       clientClosed = true
       passThrough.unpipe(res)
+      log(`CLIENT-DISCONNECT  downloaded=${downloadedBytes}/${expectedLength || 'N/A'}`)
     })
 
     // 分块下载：B站 CDN 中断后用 Range 请求从断点继续
@@ -285,15 +303,21 @@ router.get('/stream', async (req, res) => {
       const headers = { ...BILIBILI_HEADERS }
       if (startByte > 0) {
         headers.Range = `bytes=${startByte}-`
-        console.log(`[Cache] RESUME  chunk=${chunkIndex}  bytes=${startByte}-  title="${songTitle}"  file=${cacheHash}`)
       }
 
+      const chunkStartTime = Date.now()
       const resp = await axios.get(url, {
         headers,
         responseType: 'stream',
         timeout: 30000,
         validateStatus: (s) => s >= 200 && s < 400, // 接受 2xx/3xx，416 等会抛异常被 catch
       })
+
+      const chunkContentLength = parseInt(resp.headers['content-length'])
+      const contentRange = resp.headers['content-range']
+      if (startByte > 0) {
+        log(`RESUME  chunk=${chunkIndex}  bytes=${startByte}-  status=${resp.status}  contentLength=${chunkContentLength || 'N/A'}  contentRange=${contentRange || 'N/A'}  title="${songTitle}"  file=${cacheHash}`)
+      }
 
       let chunkSize = 0
 
@@ -308,10 +332,18 @@ router.get('/stream', async (req, res) => {
         })
 
         resp.data.on('end', () => {
+          const elapsed = Date.now() - chunkStartTime
+          if (startByte > 0) {
+            log(`CHUNK-DONE  chunk=${chunkIndex}  chunkSize=${chunkSize}  chunkContentLength=${chunkContentLength || 'N/A'}  elapsed=${elapsed}ms  total=${chunkSize + startByte}/${expectedLength}`)
+          } else {
+            log(`CHUNK-DONE  chunk=1  chunkSize=${chunkSize}  elapsed=${elapsed}ms  total=${chunkSize}/${expectedLength}`)
+          }
           resolve({ size: chunkSize, error: null })
         })
 
         resp.data.on('error', (err) => {
+          const elapsed = Date.now() - chunkStartTime
+          log(`CHUNK-ERROR  chunk=${chunkIndex}  chunkSize=${chunkSize}  elapsed=${elapsed}ms  error=${err.message}  total=${chunkSize + startByte}/${expectedLength}`)
           // 返回已下载的部分，不 reject
           resolve({ size: chunkSize, error: err })
         })
@@ -324,6 +356,7 @@ router.get('/stream', async (req, res) => {
     // 第一段：复用已打开的 response
     {
       let chunkSize = 0
+      const chunkStartTime = Date.now()
       const result = await new Promise((resolve) => {
         response.data.on('data', (chunk) => {
           chunkSize += chunk.length
@@ -333,13 +366,21 @@ router.get('/stream', async (req, res) => {
             passThrough.once('drain', () => response.data.resume())
           }
         })
-        response.data.on('end', () => resolve({ size: chunkSize, error: null }))
-        response.data.on('error', (err) => resolve({ size: chunkSize, error: err }))
+        response.data.on('end', () => {
+          const elapsed = Date.now() - chunkStartTime
+          log(`CHUNK-DONE  chunk=1  chunkSize=${chunkSize}  elapsed=${elapsed}ms  total=${chunkSize}/${expectedLength}`)
+          resolve({ size: chunkSize, error: null })
+        })
+        response.data.on('error', (err) => {
+          const elapsed = Date.now() - chunkStartTime
+          log(`CHUNK-ERROR  chunk=1  chunkSize=${chunkSize}  elapsed=${elapsed}ms  error=${err.message}  total=${chunkSize}/${expectedLength}`)
+          resolve({ size: chunkSize, error: err })
+        })
       })
       downloadedBytes += result.size
       chunkIndex = 1
       if (result.error) {
-        console.log(`[Cache] INTERRUPT  chunk=1  downloaded=${downloadedBytes}/${expectedLength}  error=${result.error.message}`)
+        log(`INTERRUPT  chunk=1  downloaded=${downloadedBytes}/${expectedLength}  error=${result.error.message}`)
         hadError = true
       }
     }
@@ -352,15 +393,17 @@ router.get('/stream', async (req, res) => {
         downloadedBytes += result.size
 
         if (result.error) {
-          console.log(`[Cache] INTERRUPT  chunk=${chunkIndex}  downloaded=${downloadedBytes}/${expectedLength}  error=${result.error.message}`)
+          log(`INTERRUPT  chunk=${chunkIndex}  downloaded=${downloadedBytes}/${expectedLength}  error=${result.error.message}`)
           hadError = true
         }
       } catch (chunkErr) {
-        console.log(`[Cache] CHUNK-ERROR  chunk=${chunkIndex}  downloaded=${downloadedBytes}/${expectedLength}  error=${chunkErr.message}`)
+        log(`CHUNK-ERROR  chunk=${chunkIndex}  downloaded=${downloadedBytes}/${expectedLength}  error=${chunkErr.message}`)
         hadError = true
         break
       }
     }
+
+    log(`DOWNLOAD-END  downloaded=${downloadedBytes}/${expectedLength}  chunks=${chunkIndex}  hadError=${hadError}  clientClosed=${clientClosed}`)
 
     // 所有分块下载完成，结束 passThrough 和 writeStream
     passThrough.end()
@@ -368,14 +411,17 @@ router.get('/stream', async (req, res) => {
 
     if (!clientClosed && hadError && downloadedBytes < expectedLength) {
       // 仍有数据缺失，关闭客户端连接
-      if (!res.writableEnded) res.end()
+      if (!res.writableEnded) {
+        log(`CLOSING-CLIENT  reason=incomplete_data  downloaded=${downloadedBytes}/${expectedLength}`)
+        res.end()
+      }
     }
 
     writeStream.on('finish', () => {
       const actualSize = fs.statSync(tmpPath).size
       const isComplete = !expectedLength || actualSize >= expectedLength
       if (!isComplete) {
-        console.log(`[Cache] INCOMPLETE: ${actualSize}/${expectedLength}, keeping partial cache`)
+        log(`INCOMPLETE  actual=${actualSize}/${expectedLength}  keeping partial cache`)
       }
       try {
         fs.renameSync(tmpPath, dataPath)
@@ -389,18 +435,19 @@ router.get('/stream', async (req, res) => {
         createdAt: Date.now(),
         complete: isComplete,
       })
-      console.log(`[Cache] STORED  size=${actualSize}  complete=${isComplete}  title="${songTitle}"  file=${cacheHash}`)
+      log(`STORED  size=${actualSize}  complete=${isComplete}  title="${songTitle}"  file=${cacheHash}`)
       setImmediate(cleanCache)
     })
 
     writeStream.on('error', (err) => {
-      console.error(`[Cache] WRITE ERROR: ${err.message}`)
+      log(`WRITE ERROR: ${err.message}`)
       if (fs.existsSync(tmpPath)) {
         try { fs.unlinkSync(tmpPath) } catch {}
       }
     })
   } catch (err) {
-    console.error(`[Cache] STREAM ERROR: ${err.message}`)
+    console.error(`[Cache:${reqId}] STREAM ERROR: ${err.message}`)
+    console.error(`[Cache:${reqId}] STACK: ${err.stack}`)
     if (!res.headersSent) {
       res.status(500).json({ success: false, message: '音频流获取失败' })
     }
@@ -410,6 +457,12 @@ router.get('/stream', async (req, res) => {
 // 完整下载到磁盘缓存（用于 seek 场景 / 后台补全不完整缓存）
 // 支持 B站 CDN 中断后断点续传
 async function downloadToCache(url, dataPath, metaPath, songTitle = '', cacheHash = '', isBackground = false) {
+  const reqId = Date.now() + (Math.random() * 1000 | 0)
+  const log = (msg) => console.log(`[Cache:${reqId}] ${msg}`)
+  const tag = isBackground ? 'BG' : 'DL'
+
+  log(`${tag}-START  title="${songTitle}"  file=${cacheHash}  url=${url.slice(0, 80)}...`)
+
   const tmpPath = `${dataPath}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`
   const writeStream = fs.createWriteStream(tmpPath)
 
@@ -425,18 +478,30 @@ async function downloadToCache(url, dataPath, metaPath, songTitle = '', cacheHas
       headers: BILIBILI_HEADERS,
       responseType: 'stream',
       timeout: 30000,
+      validateStatus: (s) => s >= 200 && s < 400,
     })
     contentType = response.headers['content-type'] || 'audio/mp4'
     expectedLength = parseInt(response.headers['content-length'])
 
+    log(`${tag}-RESP  status=${response.status}  contentLength=${expectedLength || 'N/A'}  contentType=${contentType}`)
+
     let chunkSize = 0
+    const chunkStartTime = Date.now()
     const result = await new Promise((resolve) => {
       response.data.on('data', (chunk) => {
         chunkSize += chunk.length
         writeStream.write(chunk)
       })
-      response.data.on('end', () => resolve({ size: chunkSize, error: null }))
-      response.data.on('error', (err) => resolve({ size: chunkSize, error: err }))
+      response.data.on('end', () => {
+        const elapsed = Date.now() - chunkStartTime
+        log(`${tag}-CHUNK-DONE  chunk=1  chunkSize=${chunkSize}  elapsed=${elapsed}ms  total=${chunkSize}/${expectedLength}`)
+        resolve({ size: chunkSize, error: null })
+      })
+      response.data.on('error', (err) => {
+        const elapsed = Date.now() - chunkStartTime
+        log(`${tag}-CHUNK-ERROR  chunk=1  chunkSize=${chunkSize}  elapsed=${elapsed}ms  error=${err.message}  total=${chunkSize}/${expectedLength}`)
+        resolve({ size: chunkSize, error: err })
+      })
     })
     downloadedBytes += result.size
     chunkIndex = 1
@@ -445,9 +510,9 @@ async function downloadToCache(url, dataPath, metaPath, songTitle = '', cacheHas
       // 第一段就完整了
       writeStream.end()
       await new Promise((r) => writeStream.on('finish', r))
-      return finishDownload(tmpPath, dataPath, metaPath, contentType, expectedLength, downloadedBytes, songTitle, cacheHash, isBackground)
+      return finishDownload(tmpPath, dataPath, metaPath, contentType, expectedLength, downloadedBytes, songTitle, cacheHash, isBackground, reqId)
     }
-    console.log(`[Cache] DL-INTERRUPT  chunk=1  downloaded=${downloadedBytes}/${expectedLength}  title="${songTitle}"  file=${cacheHash}`)
+    log(`${tag}-INTERRUPT  chunk=1  downloaded=${downloadedBytes}/${expectedLength}`)
   }
 
   // 后续段：断点续传
@@ -455,9 +520,9 @@ async function downloadToCache(url, dataPath, metaPath, songTitle = '', cacheHas
   while (expectedLength && downloadedBytes < expectedLength && chunkIndex < MAX_CHUNKS) {
     chunkIndex++
     const headers = { ...BILIBILI_HEADERS, Range: `bytes=${downloadedBytes}-` }
-    console.log(`[Cache] DL-RESUME  chunk=${chunkIndex}  bytes=${downloadedBytes}-  title="${songTitle}"  file=${cacheHash}`)
 
     try {
+      const chunkStartTime = Date.now()
       const resp = await axios.get(url, {
         headers,
         responseType: 'stream',
@@ -465,33 +530,48 @@ async function downloadToCache(url, dataPath, metaPath, songTitle = '', cacheHas
         validateStatus: (s) => s >= 200 && s < 400,
       })
 
+      const chunkContentLength = parseInt(resp.headers['content-length'])
+      const contentRange = resp.headers['content-range']
+      log(`${tag}-RESUME  chunk=${chunkIndex}  bytes=${downloadedBytes}-  status=${resp.status}  contentLength=${chunkContentLength || 'N/A'}  contentRange=${contentRange || 'N/A'}`)
+
       let chunkSize = 0
       const result = await new Promise((resolve) => {
         resp.data.on('data', (chunk) => {
           chunkSize += chunk.length
           writeStream.write(chunk)
         })
-        resp.data.on('end', () => resolve({ size: chunkSize, error: null }))
-        resp.data.on('error', (err) => resolve({ size: chunkSize, error: err }))
+        resp.data.on('end', () => {
+          const elapsed = Date.now() - chunkStartTime
+          log(`${tag}-CHUNK-DONE  chunk=${chunkIndex}  chunkSize=${chunkSize}  chunkContentLength=${chunkContentLength || 'N/A'}  elapsed=${elapsed}ms  total=${chunkSize + downloadedBytes}/${expectedLength}`)
+          resolve({ size: chunkSize, error: null })
+        })
+        resp.data.on('error', (err) => {
+          const elapsed = Date.now() - chunkStartTime
+          log(`${tag}-CHUNK-ERROR  chunk=${chunkIndex}  chunkSize=${chunkSize}  elapsed=${elapsed}ms  error=${err.message}  total=${chunkSize + downloadedBytes}/${expectedLength}`)
+          resolve({ size: chunkSize, error: err })
+        })
       })
       downloadedBytes += result.size
 
       if (result.error) {
-        console.log(`[Cache] DL-INTERRUPT  chunk=${chunkIndex}  downloaded=${downloadedBytes}/${expectedLength}  title="${songTitle}"  file=${cacheHash}`)
+        log(`${tag}-INTERRUPT  chunk=${chunkIndex}  downloaded=${downloadedBytes}/${expectedLength}`)
       }
     } catch (chunkErr) {
-      console.log(`[Cache] DL-CHUNK-ERROR  chunk=${chunkIndex}  downloaded=${downloadedBytes}/${expectedLength}  error=${chunkErr.message}  title="${songTitle}"  file=${cacheHash}`)
+      log(`${tag}-CHUNK-ERROR  chunk=${chunkIndex}  downloaded=${downloadedBytes}/${expectedLength}  error=${chunkErr.message}`)
       break
     }
   }
 
+  log(`${tag}-DOWNLOAD-END  downloaded=${downloadedBytes}/${expectedLength}  chunks=${chunkIndex}`)
+
   writeStream.end()
   await new Promise((r) => writeStream.on('finish', r))
-  return finishDownload(tmpPath, dataPath, metaPath, contentType, expectedLength, downloadedBytes, songTitle, cacheHash, isBackground)
+  return finishDownload(tmpPath, dataPath, metaPath, contentType, expectedLength, downloadedBytes, songTitle, cacheHash, isBackground, reqId)
 }
 
 // 完成下载：重命名文件，写入元数据
-function finishDownload(tmpPath, dataPath, metaPath, contentType, expectedLength, actualSize, songTitle, cacheHash, isBackground) {
+function finishDownload(tmpPath, dataPath, metaPath, contentType, expectedLength, actualSize, songTitle, cacheHash, isBackground, reqId) {
+  const log = (msg) => console.log(`[Cache:${reqId}] ${msg}`)
   const isComplete = !expectedLength || actualSize >= expectedLength
 
   if (!isComplete && !isBackground) {
@@ -514,7 +594,7 @@ function finishDownload(tmpPath, dataPath, metaPath, contentType, expectedLength
   })
 
   const tag = isBackground ? 'BG-FETCH' : 'STORED'
-  console.log(`[Cache] ${tag}  size=${actualSize}  complete=${isComplete}  title="${songTitle}"  file=${cacheHash}`)
+  log(`${tag}  size=${actualSize}  complete=${isComplete}  title="${songTitle}"  file=${cacheHash}`)
   setImmediate(cleanCache)
 }
 
