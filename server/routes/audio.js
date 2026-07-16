@@ -95,6 +95,9 @@ function formatAge(ms) {
   return `${min}m`
 }
 
+// 后台补全锁：同一首歌只允许一个 downloadToCache 在跑
+const bgFetchLocks = new Set()
+
 // 检查缓存是否有效（文件存在且大小匹配）
 // 返回 { valid, complete } -- valid 表示可播放，complete 表示已完整下载
 function checkCache(dataPath, metaPath) {
@@ -176,12 +179,17 @@ router.get('/stream', async (req, res) => {
       const contentType = meta?.contentType || 'audio/mp4'
       const fileSize = fs.statSync(dataPath).size
 
-      // 缓存不完整时，后台异步补全下载
-      if (!cacheComplete) {
+      // 缓存不完整时，后台异步补全下载（加锁防止并发）
+      if (!cacheComplete && !bgFetchLocks.has(cacheHash)) {
+        bgFetchLocks.add(cacheHash)
         console.log(`[Cache] BG-FETCH  title="${songTitle}"  file=${cacheHash}`)
-        downloadToCache(url, dataPath, metaPath, songTitle, cacheHash, true).catch((err) => {
-          console.error(`[Cache] BG-FETCH FAILED: ${err.message}  title="${songTitle}"  file=${cacheHash}`)
-        })
+        downloadToCache(url, dataPath, metaPath, songTitle, cacheHash, true)
+          .catch((err) => {
+            console.error(`[Cache] BG-FETCH FAILED: ${err.message}  title="${songTitle}"  file=${cacheHash}`)
+          })
+          .finally(() => {
+            bgFetchLocks.delete(cacheHash)
+          })
       }
 
       if (hasRange && rangeStart < fileSize) {
