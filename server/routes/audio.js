@@ -231,6 +231,7 @@ router.get('/stream', async (req, res) => {
     }
 
     // 从 B站 CDN 边下载边响应客户端 + 同时写入磁盘缓存
+    // B站 CDN 中断时自动从断点继续下载，拼接成完整流
     console.log(`[Cache] STREAM  title="${songTitle}"  file=${cacheHash}`)
     const response = await axios.get(url, {
       headers: BILIBILI_HEADERS,
@@ -249,40 +250,113 @@ router.get('/stream', async (req, res) => {
     res.setHeader('Accept-Ranges', 'bytes')
     res.status(200)
 
-    // 同时写入临时文件用于缓存
+    // 临时文件用于缓存
     const tmpPath = `${dataPath}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`
     const writeStream = fs.createWriteStream(tmpPath)
 
-    // 用 PassThrough 正确分流：B站流 -> PassThrough -> 客户端 + 磁盘
-    // PassThrough 自动处理背压，避免 on('data') + pipe() 并用导致的冲突
+    // PassThrough 作为中转：分块下载的数据都写入这里，再 pipe 到客户端和磁盘
     const passThrough = new PassThrough()
-    response.data.pipe(passThrough)
     passThrough.pipe(res)
     passThrough.pipe(writeStream)
 
-    // 客户端断开时：只停止给客户端的 pipe，但让 B站下载继续写入磁盘
+    // 客户端断开时：让下载继续写磁盘，只停止给客户端
     let clientClosed = false
     req.on('close', () => {
       clientClosed = true
-      // 只 unpipe 客户端，不 destroy B站源流，让缓存下载继续
       passThrough.unpipe(res)
     })
 
-    // B站流结束：完成磁盘写入，保存缓存
-    response.data.on('end', () => {
-      writeStream.end()
-    })
+    // 分块下载：B站 CDN 中断后用 Range 请求从断点继续
+    const MAX_CHUNKS = 5
+    let downloadedBytes = 0
+    let chunkIndex = 0
 
-    // B站流错误（如 CDN 限流中断）：保留已下载的部分作为缓存
-    response.data.on('error', (err) => {
-      console.error(`[Cache] STREAM ERROR: ${err.message}`)
-      writeStream.end()
-      if (!clientClosed && !res.headersSent) {
-        res.status(500).json({ success: false, message: '音频流获取失败' })
-      } else if (!clientClosed) {
-        res.end()
+    // 下载一个分块，返回本段下载的字节数
+    async function downloadChunk(startByte) {
+      chunkIndex++
+      const headers = { ...BILIBILI_HEADERS }
+      if (startByte > 0) {
+        headers.Range = `bytes=${startByte}-`
+        console.log(`[Cache] RESUME  chunk=${chunkIndex}  bytes=${startByte}-  title="${songTitle}"  file=${cacheHash}`)
       }
-    })
+
+      const resp = await axios.get(url, {
+        headers,
+        responseType: 'stream',
+        timeout: 30000,
+      })
+
+      let chunkSize = 0
+
+      return new Promise((resolve) => {
+        resp.data.on('data', (chunk) => {
+          chunkSize += chunk.length
+          const ok = passThrough.write(chunk)
+          if (!ok) {
+            resp.data.pause()
+            passThrough.once('drain', () => resp.data.resume())
+          }
+        })
+
+        resp.data.on('end', () => {
+          resolve({ size: chunkSize, error: null })
+        })
+
+        resp.data.on('error', (err) => {
+          // 返回已下载的部分，不 reject
+          resolve({ size: chunkSize, error: err })
+        })
+      })
+    }
+
+    // 循环下载直到完整或达到最大分块数
+    let streamError = null
+
+    // 第一段：复用已打开的 response
+    {
+      let chunkSize = 0
+      const result = await new Promise((resolve) => {
+        response.data.on('data', (chunk) => {
+          chunkSize += chunk.length
+          const ok = passThrough.write(chunk)
+          if (!ok) {
+            response.data.pause()
+            passThrough.once('drain', () => response.data.resume())
+          }
+        })
+        response.data.on('end', () => resolve({ size: chunkSize, error: null }))
+        response.data.on('error', (err) => resolve({ size: chunkSize, error: err }))
+      })
+      downloadedBytes += result.size
+      chunkIndex = 1
+      if (result.error) {
+        console.log(`[Cache] INTERRUPT  chunk=1  downloaded=${downloadedBytes}/${expectedLength}  error=${result.error.message}`)
+        streamError = result.error
+      }
+    }
+
+    // 后续段：B站中断后用 Range 请求从断点继续
+    while (streamError && downloadedBytes < expectedLength && chunkIndex < MAX_CHUNKS) {
+      const result = await downloadChunk(downloadedBytes)
+      downloadedBytes += result.size
+
+      if (result.error) {
+        console.log(`[Cache] INTERRUPT  chunk=${chunkIndex}  downloaded=${downloadedBytes}/${expectedLength}  error=${result.error.message}`)
+        streamError = result.error
+      } else {
+        streamError = null
+        break
+      }
+    }
+
+    // 所有分块下载完成，结束 passThrough 和 writeStream
+    passThrough.end()
+    writeStream.end()
+
+    if (!clientClosed && streamError && downloadedBytes < expectedLength) {
+      // 仍有数据缺失，关闭客户端连接
+      if (!res.writableEnded) res.end()
+    }
 
     writeStream.on('finish', () => {
       const actualSize = fs.statSync(tmpPath).size
