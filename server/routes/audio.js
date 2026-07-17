@@ -190,7 +190,19 @@ router.get('/stream', async (req, res) => {
       if (!cacheComplete && !bgFetchLocks.has(cacheHash)) {
         bgFetchLocks.add(cacheHash)
         log(`BG-FETCH  title="${songTitle}"  file=${cacheHash}`)
-        downloadToCache(url, dataPath, metaPath, songTitle, cacheHash, true)
+
+        // 用 bvid 重新获取新鲜 URL，避免使用过期的 B站签名 URL
+        const bgFetchPromise = bvid
+          ? getAudioUrl(bvid)
+              .then((data) => data.audioUrl)
+              .catch((err) => {
+                log(`BG-FETCH URL-REFRESH FAILED: ${err.message}, falling back to cached url`)
+                return url
+              })
+          : Promise.resolve(url)
+
+        bgFetchPromise
+          .then((freshUrl) => downloadToCache(freshUrl, dataPath, metaPath, songTitle, cacheHash, true))
           .catch((err) => {
             log(`BG-FETCH FAILED: ${err.message}  title="${songTitle}"  file=${cacheHash}`)
           })
@@ -235,7 +247,27 @@ router.get('/stream', async (req, res) => {
     // 回退到先完整下载再从磁盘读取
     if (hasRange && rangeStart > 0) {
       log(`SEEK  rangeStart=${rangeStart}  falling back to downloadToCache`)
-      await downloadToCache(url, dataPath, metaPath, songTitle, cacheHash, false)
+
+      // 客户端断开时取消下载
+      let seekAborted = false
+      const onSeekClose = () => {
+        seekAborted = true
+        log(`SEEK-ABORT  client disconnected during download`)
+      }
+      req.on('close', onSeekClose)
+
+      try {
+        await downloadToCache(url, dataPath, metaPath, songTitle, cacheHash, false)
+      } finally {
+        req.off('close', onSeekClose)
+      }
+
+      // 客户端已断开，不再写响应
+      if (seekAborted || res.writableEnded) {
+        log(`SEEK-SKIP  client gone, cache stored`)
+        return
+      }
+
       const meta = readMeta(metaPath)
       const contentType = meta?.contentType || 'audio/mp4'
       const fileSize = fs.statSync(dataPath).size
