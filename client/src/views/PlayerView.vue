@@ -38,13 +38,19 @@ function handleAddToPlaylist(song) {
     <h2 class="page-title">播放器</h2>
 
     <div v-if="player.currentSong" class="player-view__current">
-      <div class="player-view__cover-wrap">
-        <img
-          :src="getImageUrl(player.currentSong.cover)"
-          class="player-view__cover"
-          alt="封面"
-        />
-        <div v-if="player.isPlaying" class="player-view__cover-glow"></div>
+      <div class="player-view__stage">
+        <div class="player-view__cover-wrap">
+          <div class="player-view__disc" :class="{ 'is-spinning': player.isPlaying }">
+            <img
+              :src="getImageUrl(player.currentSong.cover)"
+              class="player-view__cover"
+              alt="封面"
+            />
+            <div class="player-view__cd-grooves"></div>
+          </div>
+          <div class="player-view__cd-hole"></div>
+          <div v-if="player.isPlaying" class="player-view__cover-glow"></div>
+        </div>
       </div>
       <div class="player-view__info">
         <h3 class="player-view__title">{{ player.currentSong.title }}</h3>
@@ -92,128 +98,246 @@ function handleAddToPlaylist(song) {
 .player-view {
   max-width: 860px;
   margin: 0 auto;
+}
 
-  &__current {
-    display: flex;
-    gap: $sp-6;
-    margin-bottom: $sp-8;
-    animation: riseIn 0.5s $ease-out;
-  }
+.page-title {
+  font-family: $font-mono;
+  font-size: 11px;
+  font-weight: 400;
+  color: $color-text-faint;
+  letter-spacing: 0.4em;
+  text-transform: uppercase;
+  margin-bottom: $sp-8;
+  padding-left: $sp-1;
+}
 
-  &__cover-wrap {
-    position: relative;
-    width: 160px;
-    height: 160px;
-    flex-shrink: 0;
-  }
+.player-view__current {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: $sp-8;
+  margin-bottom: $sp-12;
+  animation: riseIn 0.5s $ease-out;
+}
 
-  &__cover {
-    width: 100%;
-    height: 100%;
-    border-radius: $radius-md;
-    object-fit: cover;
-    border: 1px solid $color-border;
-  }
+.player-view__stage {
+  position: relative;
+  padding: $sp-6 0;
 
-  &__cover-glow {
+  // 舞台聚光氛围：CD 后方的径向光晕，营造"舞台聚光灯"纵深感
+  &::before {
+    content: '';
     position: absolute;
-    inset: -2px;
-    border-radius: $radius-md;
-    border: 1px solid $color-cyan-bright;
-    box-shadow: $glow-cyan;
-    animation: pulse 2s ease-in-out infinite;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: 320px;
+    height: 320px;
+    border-radius: 50%;
+    background: radial-gradient(
+      circle,
+      rgba(34, 211, 238, 0.08) 0%,
+      rgba(34, 211, 238, 0.03) 40%,
+      transparent 70%
+    );
     pointer-events: none;
+    z-index: 0;
   }
+}
 
-  &__info {
-    flex: 1;
-    min-width: 0;
+.player-view__cover-wrap {
+  position: relative;
+  width: 200px;
+  height: 200px;
+  flex-shrink: 0;
+  z-index: 1;
+}
+
+.player-view__disc {
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  overflow: hidden;
+  animation: cdSpin 24s linear infinite;
+  animation-play-state: paused;
+  will-change: transform;
+
+  &.is-spinning {
+    animation-play-state: running;
   }
+}
 
-  &__title {
-    font-family: $font-display;
-    font-size: 22px;
-    font-weight: 600;
-    color: $color-text;
-    margin-bottom: $sp-2;
-  }
+.player-view__cover {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
 
-  &__author {
-    color: $color-text-mute;
-    font-size: 14px;
-    margin-bottom: $sp-4;
-  }
+// CD 同心圆纹路叠加
+.player-view__cd-grooves {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  pointer-events: none;
+  background: repeating-radial-gradient(
+    circle at center,
+    transparent 0,
+    transparent 4px,
+    rgba(0, 0, 0, 0.18) 4px,
+    rgba(0, 0, 0, 0.18) 5px
+  );
+  mix-blend-mode: overlay;
+}
 
-  &__status {
-    display: flex;
-    align-items: center;
-    gap: $sp-2;
-    color: $color-text-mute;
-    font-size: 11px;
-    letter-spacing: 0.2em;
-  }
+// CD 中心主轴孔
+.player-view__cd-hole {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: $color-void;
+  border: 1px solid $color-cyan-deep;
+  box-shadow: $glow-cyan-soft, inset 0 0 8px rgba(0, 0, 0, 0.9);
+  z-index: 2;
+  pointer-events: none;
 
-  &__playing {
-    display: flex;
-    align-items: center;
-    gap: $sp-2;
-    color: $color-cyan-bright;
-    @include text-glow;
-  }
-
-  &__pulse {
-    width: 8px;
-    height: 8px;
+  // 主轴孔中心的小亮点
+  &::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: 6px;
+    height: 6px;
     border-radius: 50%;
     background: $color-cyan-bright;
     box-shadow: $glow-cyan;
-    animation: pulse 1.5s ease-in-out infinite;
   }
+}
 
-  &__error {
-    color: $color-error;
+.player-view__cover-glow {
+  position: absolute;
+  inset: -3px;
+  border-radius: 50%;
+  border: 1px solid $color-cyan-bright;
+  box-shadow: $glow-cyan;
+  // 仅动画 opacity，避免无限 transform 动画在长时间播放后触发合成器层漂移
+  animation: glowPulse 2s ease-in-out infinite;
+  pointer-events: none;
+}
+
+.player-view__info {
+  flex: 1;
+  min-width: 0;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: $sp-2;
+}
+
+.player-view__title {
+  font-family: $font-display;
+  font-size: 26px;
+  font-weight: 600;
+  color: $color-text;
+  line-height: 1.3;
+  max-width: 560px;
+  word-break: break-word;
+}
+
+.player-view__author {
+  color: $color-text-mute;
+  font-size: 15px;
+}
+
+.player-view__status {
+  display: flex;
+  align-items: center;
+  gap: $sp-2;
+  color: $color-text-mute;
+  font-size: 11px;
+  letter-spacing: 0.2em;
+  margin-top: $sp-2;
+}
+
+.player-view__playing {
+  display: flex;
+  align-items: center;
+  gap: $sp-2;
+  color: $color-cyan-bright;
+  @include text-glow;
+}
+
+.player-view__pulse {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: $color-cyan-bright;
+  box-shadow: $glow-cyan;
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+.player-view__error {
+  color: $color-error;
+}
+
+.player-view__error-banner {
+  @include flex-center;
+  gap: $sp-4;
+  padding: $sp-4;
+  background: rgba($color-error, 0.1);
+  border: 1px solid rgba($color-error, 0.4);
+  border-radius: $radius-sm;
+  color: $color-error;
+  margin-bottom: $sp-6;
+  font-size: 13px;
+}
+
+.player-view__retry {
+  padding: $sp-1 $sp-3;
+  border: 1px solid $color-error;
+  border-radius: $radius-sm;
+  color: $color-error;
+  font-size: 12px;
+  transition: all $t-fast;
+
+  &:hover {
+    background: $color-error;
+    color: $color-void;
   }
+}
 
-  &__error-banner {
-    @include flex-center;
-    gap: $sp-4;
-    padding: $sp-4;
-    background: rgba($color-error, 0.1);
-    border: 1px solid rgba($color-error, 0.4);
-    border-radius: $radius-sm;
-    color: $color-error;
-    margin-bottom: $sp-6;
-    font-size: 13px;
-  }
+.player-view__queue {
+  margin-top: $sp-4;
+  padding-top: $sp-8;
+  border-top: 1px solid $color-border;
+}
 
-  &__retry {
-    padding: $sp-1 $sp-3;
-    border: 1px solid $color-error;
-    border-radius: $radius-sm;
-    color: $color-error;
-    font-size: 12px;
-    transition: all $t-fast;
-
-    &:hover {
-      background: $color-error;
-      color: $color-void;
-    }
-  }
-
-  &__queue {
-    margin-top: $sp-8;
-  }
-
-  &__queue-title {
-    font-family: $font-display;
-    font-size: 16px;
-    color: $color-text;
-    margin-bottom: $sp-4;
-  }
+.player-view__queue-title {
+  font-family: $font-display;
+  font-size: 16px;
+  color: $color-text;
+  margin-bottom: $sp-4;
 }
 
 @keyframes pulse {
   0%, 100% { opacity: 1; transform: scale(1); }
   50% { opacity: 0.5; transform: scale(1.2); }
+}
+
+// 封面发光脉冲：仅 opacity，不使用 transform，避免长时间播放后合成器漂移
+@keyframes glowPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+// CD 缓速旋转
+@keyframes cdSpin {
+  to { transform: rotate(360deg); }
 }
 </style>

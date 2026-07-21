@@ -1,7 +1,7 @@
 # BiliMusic 设计文档
 
 > 创建日期：2026-07-07
-> 最后更新：2026-07-08
+> 最后更新：2026-07-17
 > 状态：已确认
 
 ## 1. 项目概述
@@ -85,9 +85,11 @@ BiliMusic/
 ├── server/                    # 后端 Express 服务
 │   ├── routes/
 │   │   ├── search.js          # /api/search 路由
-│   │   └── audio.js           # /api/audio/url 和 /api/audio/stream 路由
+│   │   └── audio.js           # /api/audio/url 和 /api/audio/stream 路由（含磁盘缓存、流式中转、断点续传）
 │   ├── services/
-│   │   └── bilibili.js        # Bilibili API 封装
+│   │   └── bilibili.js        # Bilibili API 封装（WBI 签名、Cookie TTL 缓存）
+│   ├── cache/
+│   │   └── audio/             # 音频磁盘缓存目录（.dat 数据 + .meta 元数据，LRU 最多 200 个）
 │   ├── app.js                 # Express 应用入口
 │   └── package.json
 ├── package.json               # 根目录，统一管理脚本
@@ -130,17 +132,72 @@ BiliMusic/
 |------|------|------|------|
 | `/api/search` | GET | `keyword`、`page` | 搜索音乐，返回格式化结果列表 |
 | `/api/audio/url` | GET | `bvid` | 获取音频流地址，后端内部完成 bvid→cid→playurl 的完整流程 |
-| `/api/audio/stream` | GET | `url` | 音频流代理：完整下载到内存，服务端处理 Range 请求 |
+| `/api/audio/stream` | GET | `url`、`bvid`、`title` | 音频流代理：边下载边响应客户端 + 磁盘缓存，支持 Range 请求与断点续传 |
 
 ### 音频流代理实现（关键）
 
-由于 B站 CDN 对单个连接有数据量限制（约 150s 数据量后断开），且浏览器 Range 续传请求 B站不响应，音频流代理采用**完整下载到内存**方案：
+由于 B站 CDN 对单个连接有数据量限制（约 150s 数据量后会中断），且浏览器 Range 续传请求 B站不响应，音频流代理采用**磁盘缓存 + 流式中转**方案，避免每次播放都回源 B站，并通过断点续传自动补齐被中断的数据：
 
-- **下载方式**：`axios.get(url, { responseType: 'arraybuffer' })` 完整下载
-- **完整性校验**：对比 `Content-Length`，不完整则抛错
-- **Range 请求支持**：服务端从内存 Buffer 截取数据返回 206 响应（支持 seek）
-- **内存缓存**：5 分钟 TTL，LRU 策略限制最多 10 个（避免内存泄漏）
-- **请求头**：附加 `Referer: https://www.bilibili.com` 和 `User-Agent`
+#### 缓存存储
+
+- **缓存目录**：`server/cache/audio/`
+- **缓存键**：优先用 `bvid` 的 MD5（而非 URL），保证同一首歌即使 B站签名 URL 变化也能命中缓存
+- **文件结构**：
+  - `<hash>.dat`：音频数据
+  - `<hash>.meta`：JSON 元数据（`contentType`、`size`、`complete`、`createdAt`）
+- **临时文件**：下载时写入 `<hash>.<pid>.<ts>.<rand>.tmp`，完成后 `rename` 为 `.dat`，防止并发写入冲突
+- **LRU 清理**：超过 `MAX_CACHE_FILES=200` 时删除最旧文件（按 mtime 排序）
+
+#### 缓存命中流程（HIT / HIT-PARTIAL）
+
+1. `checkCache()` 校验 `.dat` 与 `.meta` 是否存在且 `size` 一致
+2. `meta.complete !== false` 标记为完整缓存（HIT），否则为部分缓存（HIT-PARTIAL）
+3. 从磁盘读取并支持 Range 请求（206 响应）
+4. **部分缓存后台补全**：若 `!cacheComplete` 且无锁，用 `bgFetchLocks`（Set）加锁后异步调用 `downloadToCache` 补全；期间仍用已缓存数据响应客户端
+5. **BG-FETCH URL 刷新**：后台补全不使用客户端传来的过期 URL，而是用 `bvid` 调用 `getAudioUrl` 获取新鲜签名 URL，刷新失败则回退到原 URL
+
+#### 缓存未命中流程（MISS）
+
+分两种场景：
+
+**1. 普通播放（无 Range 或 rangeStart=0）-- 流式中转**
+
+采用 PassThrough 双 pipe 架构，边下载边响应客户端，同时写入磁盘缓存：
+
+```javascript
+const passThrough = new PassThrough()
+passThrough.pipe(res)         // 流向客户端
+passThrough.pipe(writeStream) // 流向磁盘临时文件
+```
+
+- **分块下载**：第一段复用初始 response；B站中断后用 Range 请求从断点继续（最多 10 个 chunk）
+- **背压处理**：`passThrough.write` 返回 false 时暂停上游，`drain` 事件恢复
+- **客户端断开**：`req.on('close')` 时 `unpipe(res)` 停止向客户端写入，但**继续下载写磁盘**，避免浪费已下载的数据
+- **数据不完整处理**：`hadError && downloadedBytes < expectedLength` 时 `unpipe(res)` 并 `res.end()` 结束客户端响应，但 PassThrough 仍会 flush 剩余缓冲到磁盘
+- **关键细节**：不要手动 `writeStream.end()`，否则 PassThrough 缓冲里剩余数据会丢失（pipe 的 end 是异步触发的）
+
+**2. Seek 场景（rangeStart > 0）-- 先完整下载再切片**
+
+B站 CDN 不支持从中间位置开始流式返回，因此 seek 时回退到 `downloadToCache` 完整下载：
+
+- `req.on('close')` 监听客户端断开，设置 `seekAborted` 标志
+- 下载完成后检查 `seekAborted || res.writableEnded`，若客户端已断开则不再写响应
+- 否则从磁盘按 Range 读取返回 206
+
+#### 断点续传机制
+
+B站 CDN 会在数据量达到阈值后中断连接（`aborted` 错误），处理策略：
+
+- 捕获 `error` 事件但**不 reject**，返回 `{ size, error }` 让循环继续
+- 用 `Range: bytes=<downloadedBytes>-` 发起续传请求（B站 CDN 支持 206 响应）
+- 最多重试 `MAX_CHUNKS=10` 次
+- 注意：B站 CDN 有时提前 `end` 但数据不完整，需对比 `downloadedBytes` 与 `expectedLength` 判断
+
+#### 不完整缓存的处理
+
+- `finishDownload` 中对比 `actualSize` 与 `expectedLength`，写入 meta 的 `complete` 字段
+- `complete=false` 的缓存仍可被命中（HIT-PARTIAL），并触发后台补全
+- 后台补全失败时保留部分缓存，下次播放再次尝试
 
 ### 请求头处理
 
@@ -349,9 +406,12 @@ Cookie: （可选，用于提升接口可用性）
 ### 后端
 
 - Bilibili API 请求失败返回统一错误格式
+- WBI 密钥/Cookie 带 TTL 缓存（Cookie 30 分钟、WBI 密钥 1 小时），遇 `code=-101`（未登录）/ `code=-352`（风控）自动清除缓存重新获取
 - 音频流下载超时设置 30 秒
-- 音频数据完整性校验（对比 Content-Length）
-- 音频缓存 LRU 策略（5 分钟 TTL，最多 10 个）
+- 音频数据完整性校验（对比 Content-Length，不完整则标记 `complete=false`）
+- 磁盘缓存 LRU 策略（最多 200 个文件，超出删最旧）
+- 后台补全锁（`bgFetchLocks`）防止同一首歌并发下载
+- 详细日志系统：每个请求带 `reqId`，记录 MISS/HIT/STREAM/CHUNK-DOWNLOAD/INTERRUPT/RESUME/STORED/CLIENT-DISCONNECT 等关键事件，并包含 `title` 和 `file`（MD5 hash）便于辨识
 
 ## 7. 测试策略
 
@@ -370,7 +430,9 @@ Cookie: （可选，用于提升接口可用性）
 
 ## 8. 已知限制
 
-- B站 CDN 数据量限制：通过完整下载到内存方案规避，但大文件会占用较多内存
+- B站 CDN 数据量限制：通过磁盘缓存 + 流式中转 + 断点续传方案规避，首次播放若遇中断会自动续传补齐；部分缓存（HIT-PARTIAL）会触发后台异步补全
+- 缓存不自动过期：`.dat`/`.meta` 文件无 TTL，仅通过 LRU（200 个）淘汰；如需清理需手动删除 `server/cache/audio/` 目录
+- Seek 场景开销：seek 到未缓存位置时需完整下载到磁盘后再切片返回，首次 seek 会有延迟
 - 无用户登录：收藏和歌单仅存储在本地 localStorage
 - 无歌词显示
 - 无音频下载

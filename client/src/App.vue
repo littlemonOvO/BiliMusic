@@ -312,21 +312,22 @@ function onAudioCanPlay(e) {}
         <!-- 区域 A · 当前播放卡片 -->
         <div class="player-bar__zone player-bar__zone--now">
           <div class="player-bar__cover-wrap">
-            <img
-              v-if="player.currentSong"
-              :src="getImageUrl(player.currentSong.cover)"
-              class="player-bar__cover"
-              alt="cover"
-            />
-            <span v-else class="player-bar__cover player-bar__cover--idle">◌</span>
+            <div class="player-bar__disc" :class="{ 'is-spinning': player.isPlaying }">
+              <img
+                v-if="player.currentSong"
+                :src="getImageUrl(player.currentSong.cover)"
+                class="player-bar__cover"
+                alt="cover"
+              />
+              <span v-else class="player-bar__cover player-bar__cover--idle">◌</span>
+            </div>
+            <div class="player-bar__cd-hole"></div>
             <div v-if="player.isPlaying" class="player-bar__cover-glow"></div>
-            <span class="player-bar__cover-corner player-bar__cover-corner--tl"></span>
-            <span class="player-bar__cover-corner player-bar__cover-corner--br"></span>
           </div>
           <div class="player-bar__meta">
-            <div class="player-bar__title text-ellipsis">{{ player.currentSong ? player.currentSong.title : 'NO SIGNAL' }}</div>
-            <div class="player-bar__author text-ellipsis">
-              {{ player.currentSong ? player.currentSong.author : '— —' }}
+            <div class="player-bar__title text-ellipsis" :title="player.currentSong ? player.currentSong.title : ''">{{ player.currentSong ? player.currentSong.title : 'NO SIGNAL' }}</div>
+            <div class="player-bar__author text-ellipsis" :title="player.currentSong ? player.currentSong.author : ''">
+              {{ player.currentSong ? player.currentSong.author : '- -' }}
             </div>
           </div>
         </div>
@@ -765,6 +766,12 @@ function onAudioCanPlay(e) {}
   50% { opacity: 0.5; transform: scale(1.3); }
 }
 
+// 封面发光脉冲：仅 opacity，不使用 transform，避免长时间播放后合成器漂移
+@keyframes glowPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
 // ---------- MAIN ----------
 .main-content {
   flex: 1;
@@ -854,17 +861,29 @@ function onAudioCanPlay(e) {}
   // 当前播放卡片
   &__cover-wrap {
     position: relative;
-    width: 52px;
-    height: 52px;
+    width: 54px;
+    height: 54px;
     flex-shrink: 0;
+  }
+
+  &__disc {
+    width: 100%;
+    height: 100%;
+    border-radius: 50%;
+    overflow: hidden;
+    animation: cdSpin 24s linear infinite;
+    animation-play-state: paused;
+    will-change: transform;
+
+    &.is-spinning {
+      animation-play-state: running;
+    }
   }
 
   &__cover {
     width: 100%;
     height: 100%;
-    border-radius: $radius-sm;
     object-fit: cover;
-    border: 1px solid $color-border;
 
     &--idle {
       @include flex-center;
@@ -872,41 +891,34 @@ function onAudioCanPlay(e) {}
       font-family: $font-mono;
       font-size: 20px;
       background: $color-surface-2;
-      animation: spin 4s linear infinite;
     }
+  }
+
+  // CD 中心主轴孔
+  &__cd-hole {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: $color-void;
+    border: 1px solid $color-cyan-deep;
+    box-shadow: $glow-cyan-soft, inset 0 0 4px rgba(0, 0, 0, 0.9);
+    z-index: 2;
+    pointer-events: none;
   }
 
   &__cover-glow {
     position: absolute;
     inset: -2px;
-    border-radius: $radius-sm;
+    border-radius: 50%;
     border: 1px solid $color-cyan-bright;
     box-shadow: $glow-cyan;
-    animation: pulse 2s ease-in-out infinite;
+    // 仅动画 opacity，避免无限 transform 动画在长时间播放后触发合成器层漂移
+    animation: glowPulse 2s ease-in-out infinite;
     pointer-events: none;
-  }
-
-  // 卡片四角装饰刻度
-  &__cover-corner {
-    position: absolute;
-    width: 6px;
-    height: 6px;
-    border-color: $color-cyan-bright;
-    pointer-events: none;
-
-    &--tl {
-      top: -1px;
-      left: -1px;
-      border-top: 1px solid;
-      border-left: 1px solid;
-    }
-
-    &--br {
-      bottom: -1px;
-      right: -1px;
-      border-bottom: 1px solid;
-      border-right: 1px solid;
-    }
   }
 
   &__meta {
@@ -1246,7 +1258,8 @@ function onAudioCanPlay(e) {}
   50% { height: 95%; }
 }
 
-@keyframes spin {
+// CD 缓速旋转
+@keyframes cdSpin {
   to { transform: rotate(360deg); }
 }
 

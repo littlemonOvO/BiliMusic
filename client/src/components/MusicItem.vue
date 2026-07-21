@@ -45,8 +45,8 @@ const isCurrent = () => {
       </div>
     </div>
     <div class="music-item__info" @click="emit('play', song)">
-      <div class="music-item__title text-ellipsis">{{ song.title }}</div>
-      <div class="music-item__author text-ellipsis">{{ song.author }}</div>
+      <div class="music-item__title text-ellipsis" :title="song.title">{{ song.title }}</div>
+      <div class="music-item__author text-ellipsis" :title="song.author">{{ song.author }}</div>
     </div>
     <div class="music-item__duration mono">{{ song.duration }}</div>
     <div v-if="showActions" class="music-item__actions">

@@ -108,8 +108,8 @@ function handleAddToPlaylist(playlist, song) {
               alt="cover"
             />
             <div class="queue-item__info">
-              <div class="queue-item__title text-ellipsis">{{ song.title }}</div>
-              <div class="queue-item__author text-ellipsis">{{ song.author }}</div>
+              <div class="queue-item__title text-ellipsis" :title="song.title">{{ song.title }}</div>
+              <div class="queue-item__author text-ellipsis" :title="song.author">{{ song.author }}</div>
             </div>
             <div class="queue-item__actions">
               <button
@@ -164,7 +164,7 @@ function handleAddToPlaylist(playlist, song) {
               <span class="playlist-menu__icon">
                 {{ playlists.isInPlaylist(pl.id, playlistMenuSong.bvid) ? '✓' : '○' }}
               </span>
-              <span class="playlist-menu__name text-ellipsis">{{ pl.name }}</span>
+              <span class="playlist-menu__name text-ellipsis" :title="pl.name">{{ pl.name }}</span>
               <span class="playlist-menu__count mono">{{ pl.songs.length }}</span>
             </button>
             <div v-if="playlists.playlists.length === 0" class="playlist-menu__empty">
