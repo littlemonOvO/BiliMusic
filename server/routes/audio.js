@@ -6,34 +6,11 @@ import path from 'path'
 import { PassThrough } from 'stream'
 import { fileURLToPath } from 'url'
 import { getAudioUrl } from '../services/bilibili.js'
+import { BILIBILI_HEADERS } from '../lib/constants.js'
+import { isAllowedUrl } from '../lib/urlGuard.js'
+import { parseRange } from '../lib/range.js'
 
 const router = Router()
-
-const BILIBILI_HEADERS = {
-  'User-Agent':
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
-  Referer: 'https://www.bilibili.com',
-}
-
-// SSRF 防护：仅允许 B站 CDN 域名
-const ALLOWED_HOSTS = [
-  'bilivideo.com',
-  'bilivideo.cn',
-  'hdslb.com',
-  'biliapi.net',
-  'bilibili.com',
-]
-
-function isAllowedUrl(rawUrl) {
-  try {
-    const parsed = new URL(rawUrl)
-    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return false
-    const host = parsed.hostname.toLowerCase()
-    return ALLOWED_HOSTS.some((allowed) => host === allowed || host.endsWith('.' + allowed))
-  } catch {
-    return false
-  }
-}
 
 // 获取音频流地址（bvid -> cid -> playurl 完整流程）
 router.get('/url', async (req, res) => {
@@ -166,15 +143,9 @@ router.get('/stream', async (req, res) => {
     const oldMeta = readMeta(metaPath)
 
     // 解析 Range 请求
-    let rangeStart = 0
-    let hasRange = false
-    if (rangeHeader) {
-      const match = /bytes=(\d+)-(\d*)/.exec(rangeHeader)
-      if (match) {
-        rangeStart = parseInt(match[1])
-        hasRange = true
-      }
-    }
+    const range = parseRange(rangeHeader)
+    const hasRange = !!range
+    const rangeStart = range?.start ?? 0
 
     if (cacheValid) {
       // ===== 缓存命中：从磁盘读取，支持 Range =====
@@ -214,9 +185,7 @@ router.get('/stream', async (req, res) => {
       }
 
       if (hasRange && rangeStart < fileSize) {
-        const end = rangeHeader.match(/bytes=(\d+)-(\d*)/)[2]
-          ? parseInt(rangeHeader.match(/bytes=(\d+)-(\d*)/)[2])
-          : fileSize - 1
+        const end = range.end ?? fileSize - 1
         res.status(206)
         res.setHeader('Content-Range', `bytes ${rangeStart}-${end}/${fileSize}`)
         res.setHeader('Content-Length', end - rangeStart + 1)
@@ -271,9 +240,7 @@ router.get('/stream', async (req, res) => {
       const meta = readMeta(metaPath)
       const contentType = meta?.contentType || 'audio/mp4'
       const fileSize = fs.statSync(dataPath).size
-      const end = rangeHeader.match(/bytes=(\d+)-(\d*)/)[2]
-        ? parseInt(rangeHeader.match(/bytes=(\d+)-(\d*)/)[2])
-        : fileSize - 1
+      const end = range.end ?? fileSize - 1
       res.status(206)
       res.setHeader('Content-Range', `bytes ${rangeStart}-${end}/${fileSize}`)
       res.setHeader('Content-Length', end - rangeStart + 1)

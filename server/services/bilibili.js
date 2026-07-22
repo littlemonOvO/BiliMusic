@@ -1,5 +1,6 @@
 import axios from 'axios'
 import crypto from 'crypto'
+import { BILIBILI_HEADERS } from '../lib/constants.js'
 
 // B站 API 请求间隔控制（防止限流）
 let lastSearchTime = 0
@@ -13,13 +14,6 @@ async function waitSearchSlot() {
     await new Promise((r) => setTimeout(r, wait))
   }
   lastSearchTime = Date.now()
-}
-
-const BILIBILI_HEADERS = {
-  'User-Agent':
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
-  Referer: 'https://www.bilibili.com',
-  'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
 }
 
 const api = axios.create({

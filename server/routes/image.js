@@ -1,33 +1,9 @@
 import { Router } from 'express'
 import axios from 'axios'
+import { BILIBILI_HEADERS } from '../lib/constants.js'
+import { isAllowedUrl } from '../lib/urlGuard.js'
 
 const router = Router()
-
-const BILIBILI_HEADERS = {
-  'User-Agent':
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
-  Referer: 'https://www.bilibili.com',
-}
-
-// SSRF 防护：仅允许 B站 CDN 域名
-const ALLOWED_HOSTS = [
-  'bilivideo.com',
-  'bilivideo.cn',
-  'hdslb.com',
-  'biliapi.net',
-  'bilibili.com',
-]
-
-function isAllowedUrl(rawUrl) {
-  try {
-    const parsed = new URL(rawUrl)
-    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return false
-    const host = parsed.hostname.toLowerCase()
-    return ALLOWED_HOSTS.some((allowed) => host === allowed || host.endsWith('.' + allowed))
-  } catch {
-    return false
-  }
-}
 
 // 图片代理：转发图片请求，附加 Referer 头（避免 B站防盗链）
 router.get('/', async (req, res) => {
