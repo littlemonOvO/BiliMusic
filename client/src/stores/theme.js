@@ -2,16 +2,19 @@ import { defineStore } from 'pinia'
 
 const STORAGE_KEY = 'bilimusic-theme'
 
-function detectInitial() {
-  const saved = localStorage.getItem(STORAGE_KEY)
-  if (saved === 'light' || saved === 'dark') return saved
-  // 无记录时默认深色（与原设计一致）
-  return 'dark'
+// 以裸字符串（'dark'/'light'）存储，与旧版手写 localStorage 格式一致。
+// 旧版未存或值非法时回退到默认深色。
+const themePersist = {
+  key: STORAGE_KEY,
+  serializer: {
+    serialize: (state) => state.mode ?? 'dark',
+    deserialize: (raw) => (raw === 'light' || raw === 'dark' ? { mode: raw } : {}),
+  },
 }
 
 export const useThemeStore = defineStore('theme', {
   state: () => ({
-    mode: detectInitial(),
+    mode: 'dark',
   }),
   actions: {
     init() {
@@ -24,8 +27,8 @@ export const useThemeStore = defineStore('theme', {
     },
     toggle() {
       this.mode = this.mode === 'dark' ? 'light' : 'dark'
-      localStorage.setItem(STORAGE_KEY, this.mode)
       this.apply()
     },
   },
+  persist: themePersist,
 })
