@@ -86,7 +86,7 @@ function checkCache(dataPath, metaPath) {
   return { valid: true, complete: meta.complete !== false }
 }
 
-// LRU 清理：超过上限时删最旧的
+// LFU 清理：超过上限时，优先淘汰命中数最低的；命中数相同则淘汰创建时间最早的
 function cleanCache() {
   try {
     const files = fs
@@ -94,15 +94,22 @@ function cleanCache() {
       .filter((f) => f.endsWith('.dat'))
       .map((f) => {
         const fullPath = path.join(CACHE_DIR, f)
+        const metaPath = fullPath.replace('.dat', '.meta')
         const stats = fs.statSync(fullPath)
-        return { name: f, path: fullPath, mtime: stats.mtimeMs }
+        const meta = readMeta(metaPath)
+        return {
+          path: fullPath,
+          hits: meta?.hits ?? 0,
+          // meta 缺失或无 createdAt 时回退到文件 mtime
+          createdAt: meta?.createdAt ?? stats.mtimeMs,
+        }
       })
-      .sort((a, b) => a.mtime - b.mtime)
+      .sort((a, b) => a.hits - b.hits || a.createdAt - b.createdAt)
 
     while (files.length > MAX_CACHE_FILES) {
-      const oldest = files.shift()
-      fs.unlinkSync(oldest.path)
-      const metaPath = oldest.path.replace('.dat', '.meta')
+      const victim = files.shift()
+      fs.unlinkSync(victim.path)
+      const metaPath = victim.path.replace('.dat', '.meta')
       if (fs.existsSync(metaPath)) fs.unlinkSync(metaPath)
     }
   } catch {
@@ -156,6 +163,12 @@ router.get('/stream', async (req, res) => {
 
       const meta = readMeta(metaPath)
       const contentType = meta?.contentType || 'audio/mp4'
+
+      // 命中计数 +1（用于 LFU 淘汰：命中数最低优先淘汰）
+      if (meta) {
+        meta.hits = (meta.hits || 0) + 1
+        writeMeta(metaPath, meta)
+      }
 
       // 缓存不完整时，后台异步补全下载（加锁防止并发）
       if (!cacheComplete && !bgFetchLocks.has(cacheHash)) {
@@ -434,6 +447,7 @@ router.get('/stream', async (req, res) => {
         url: url.slice(0, 100),
         createdAt: Date.now(),
         complete: isComplete,
+        hits: 0,
       })
       log(`STORED  size=${actualSize}  complete=${isComplete}  title="${songTitle}"  file=${cacheHash}`)
       setImmediate(cleanCache)
@@ -591,6 +605,7 @@ function finishDownload(tmpPath, dataPath, metaPath, contentType, expectedLength
     url: '',
     createdAt: Date.now(),
     complete: isComplete,
+    hits: 0,
   })
 
   const tag = isBackground ? 'BG-FETCH' : 'STORED'
