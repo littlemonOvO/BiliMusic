@@ -1,6 +1,6 @@
 <script setup>
 import { usePlaylistsStore } from '../stores/playlists'
-import { useToast } from '../composables/useToast'
+import { useAddToPlaylist } from '../composables/useAddToPlaylist'
 
 const props = defineProps({
   show: Boolean,
@@ -10,18 +10,10 @@ const props = defineProps({
 const emit = defineEmits(['close'])
 
 const playlists = usePlaylistsStore()
-const { showToast } = useToast()
+const { addToPlaylist } = useAddToPlaylist()
 
-function handleAdd(playlistId) {
-  if (props.song) {
-    if (playlists.isInPlaylist(playlistId, props.song.bvid)) {
-      const pl = playlists.playlists.find((p) => p.id === playlistId)
-      showToast(`这首歌已在「${pl?.name}」中`, 'info')
-      return
-    }
-    playlists.addToPlaylist(playlistId, props.song)
-    const pl = playlists.playlists.find((p) => p.id === playlistId)
-    showToast(`已添加到「${pl?.name}」`, 'success')
+function handleAdd(playlist) {
+  if (props.song && addToPlaylist(playlist, props.song)) {
     emit('close')
   }
 }
@@ -40,7 +32,7 @@ function handleAdd(playlistId) {
           :key="p.id"
           class="modal__playlist-item"
           :class="{ 'modal__playlist-item--added': song && playlists.isInPlaylist(p.id, song.bvid) }"
-          @click="handleAdd(p.id)"
+          @click="handleAdd(p)"
         >
           <span class="modal__playlist-icon">
             {{ song && playlists.isInPlaylist(p.id, song.bvid) ? '✓' : '☰' }}

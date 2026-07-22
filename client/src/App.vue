@@ -2,15 +2,14 @@
 import { ref, watch, nextTick, computed, onMounted, onUnmounted } from 'vue'
 import { usePlayerStore } from './stores/player'
 import { useFavoritesStore } from './stores/favorites'
-import { usePlaylistsStore } from './stores/playlists'
 import { useThemeStore } from './stores/theme'
 import { useToast } from './composables/useToast'
 import { getImageUrl } from './api'
 import QueuePanel from './components/QueuePanel.vue'
+import AddToPlaylistMenu from './components/AddToPlaylistMenu.vue'
 
 const player = usePlayerStore()
 const favorites = useFavoritesStore()
-const playlists = usePlaylistsStore()
 const theme = useThemeStore()
 const { toasts, removeToast, showToast } = useToast()
 const audioRef = ref(null)
@@ -69,18 +68,6 @@ function togglePlaylistMenu(event) {
 
 function closePlaylistMenu() {
   showPlaylistMenu.value = false
-}
-
-function handleAddToPlaylist(playlist) {
-  if (!player.currentSong) return
-  if (playlists.isInPlaylist(playlist.id, player.currentSong.bvid)) {
-    showToast(`这首歌已在「${playlist.name}」中`, 'info')
-    closePlaylistMenu()
-    return
-  }
-  playlists.addToPlaylist(playlist.id, player.currentSong)
-  showToast(`已添加到「${playlist.name}」`, 'success')
-  closePlaylistMenu()
 }
 
 // 音频加载失败时自动重试（流失效等情况），带次数限制
@@ -448,34 +435,13 @@ function onAudioCanPlay(e) {}
 
     <QueuePanel v-if="showQueuePanel" :show="true" @close="closeQueuePanel" />
 
-    <transition name="player-playlist-menu">
-      <div
-        v-if="showPlaylistMenu && player.currentSong"
-        class="player-playlist-menu"
-        :style="{ left: playlistMenuPos.x + 'px', top: playlistMenuPos.y + 'px' }"
-        @click.stop
-      >
-        <div class="player-playlist-menu__header">添加到歌单</div>
-        <div class="player-playlist-menu__list scrollable">
-          <button
-            v-for="pl in playlists.playlists"
-            :key="pl.id"
-            class="player-playlist-menu__item"
-            :class="{ 'player-playlist-menu__item--added': playlists.isInPlaylist(pl.id, player.currentSong.bvid) }"
-            @click="handleAddToPlaylist(pl)"
-          >
-            <span class="player-playlist-menu__icon">
-              {{ playlists.isInPlaylist(pl.id, player.currentSong.bvid) ? '✓' : '○' }}
-            </span>
-            <span class="player-playlist-menu__name text-ellipsis">{{ pl.name }}</span>
-            <span class="player-playlist-menu__count mono">{{ pl.songs.length }}</span>
-          </button>
-          <div v-if="playlists.playlists.length === 0" class="player-playlist-menu__empty">
-            还没有歌单
-          </div>
-        </div>
-      </div>
-    </transition>
+    <AddToPlaylistMenu
+      :show="showPlaylistMenu && !!player.currentSong"
+      :song="player.currentSong"
+      :x="playlistMenuPos.x"
+      :y="playlistMenuPos.y"
+      @close="closePlaylistMenu"
+    />
 
     <audio
       v-if="player.currentSong?.audioStreamUrl"
@@ -1261,100 +1227,6 @@ function onAudioCanPlay(e) {}
 // CD 缓速旋转
 @keyframes cdSpin {
   to { transform: rotate(360deg); }
-}
-
-// ---------- PLAYER PLAYLIST MENU ----------
-.player-playlist-menu {
-  position: fixed;
-  z-index: 1100;
-  width: 220px;
-  max-height: 280px;
-  @include glass;
-  border: 1px solid $color-border-glow;
-  border-radius: $radius-md;
-  box-shadow: $shadow-lg, $glow-cyan-soft;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  transform: translateY(-100%);
-
-  &__header {
-    padding: $sp-3 $sp-4;
-    font-family: $font-display;
-    font-size: 12px;
-    font-weight: 600;
-    color: $color-text-mute;
-    letter-spacing: 0.1em;
-    border-bottom: 1px solid $color-border;
-    flex-shrink: 0;
-  }
-
-  &__list {
-    flex: 1;
-    overflow-y: auto;
-    padding: $sp-1;
-  }
-
-  &__item {
-    display: flex;
-    align-items: center;
-    gap: $sp-3;
-    width: 100%;
-    padding: $sp-2 $sp-3;
-    border-radius: $radius-sm;
-    transition: all $t-fast;
-    text-align: left;
-
-    &:hover {
-      background: $color-cyan-dim;
-    }
-
-    &--added {
-      .player-playlist-menu__icon {
-        color: $color-cyan-bright;
-      }
-    }
-  }
-
-  &__icon {
-    @include flex-center;
-    width: 16px;
-    height: 16px;
-    font-size: 12px;
-    color: $color-text-faint;
-    flex-shrink: 0;
-  }
-
-  &__name {
-    flex: 1;
-    min-width: 0;
-    font-size: 13px;
-    font-family: $font-display;
-    color: $color-text;
-  }
-
-  &__count {
-    font-size: 11px;
-    color: $color-text-faint;
-    flex-shrink: 0;
-  }
-
-  &__empty {
-    padding: $sp-6 $sp-4;
-    text-align: center;
-    color: $color-text-faint;
-    font-size: 13px;
-  }
-}
-
-.player-playlist-menu-enter-active,
-.player-playlist-menu-leave-active {
-  transition: opacity 0.2s $ease-out, transform 0.2s $ease-out;
-}
-.player-playlist-menu-enter-from,
-.player-playlist-menu-leave-to {
-  opacity: 0;
-  transform: translateY(calc(-100% + 8px));
 }
 
 .toast-container {
