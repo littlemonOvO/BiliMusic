@@ -1,9 +1,8 @@
 <script setup>
-import { ref } from 'vue'
 import { useFavoritesStore } from '../stores/favorites'
 import { usePlayerStore } from '../stores/player'
-import { usePlaylistsStore } from '../stores/playlists'
 import { useToast } from '../composables/useToast'
+import { useSongContextMenu } from '../composables/useSongContextMenu'
 import MusicList from '../components/MusicList.vue'
 import AddToPlaylistModal from '../components/AddToPlaylistModal.vue'
 import ContextMenu from '../components/ContextMenu.vue'
@@ -11,19 +10,7 @@ import RenameDialog from '../components/RenameDialog.vue'
 
 const favorites = useFavoritesStore()
 const player = usePlayerStore()
-const playlists = usePlaylistsStore()
 const { showToast } = useToast()
-
-const showAddModal = ref(false)
-const selectedSong = ref(null)
-
-// 右键菜单
-const ctxMenu = ref({ show: false, x: 0, y: 0, song: null })
-const ctxItems = ref([])
-
-// 重命名弹窗
-const showRenameDialog = ref(false)
-const renameTarget = ref(null)
 
 function handlePlay(song) {
   player.setQueue(favorites.items, favorites.items.findIndex((s) => s.bvid === song.bvid))
@@ -39,73 +26,29 @@ function handlePlayAll() {
   showToast('正在播放收藏列表', 'success')
 }
 
-function handleAddToNext(song) {
-  if (player.insertNext(song)) {
-    showToast(`已添加到下一首：${song.title}`, 'success')
-  } else {
-    showToast('该歌曲已在播放列表中', 'info')
-  }
+function handleRemove(song) {
+  favorites.remove(song.bvid)
+  showToast('已从收藏移除', 'success')
 }
 
-function handleAddToPlaylist(song) {
-  selectedSong.value = song
-  showAddModal.value = true
-}
-
-function handleContextMenu({ song, event }) {
-  const isFav = favorites.isFavorite(song.bvid)
-  ctxItems.value = [
-    { icon: '▶', label: '播放', action: 'play' },
-    { divider: true },
-    { icon: '⤵', label: '添加到下一首', action: 'add-to-next' },
-    { icon: '♪', label: '添加到歌单', action: 'add-to-playlist' },
-    { icon: '♥', label: isFav ? '取消收藏' : '收藏', action: 'toggle-fav', active: isFav, danger: isFav },
-    { divider: true },
-    { icon: '✎', label: '重命名', action: 'rename' },
-    { icon: '✕', label: '从收藏移除', action: 'remove-fav', danger: true },
-  ]
-  ctxMenu.value = { show: true, x: event.clientX, y: event.clientY, song }
-}
-
-function handleCtxAction(action) {
-  const song = ctxMenu.value.song
-  if (!song) return
-
-  switch (action) {
-    case 'play':
-      handlePlay(song)
-      break
-    case 'add-to-next':
-      handleAddToNext(song)
-      break
-    case 'add-to-playlist':
-      handleAddToPlaylist(song)
-      break
-    case 'toggle-fav':
-      favorites.toggle(song)
-      showToast(favorites.isFavorite(song.bvid) ? '已收藏' : '已取消收藏', 'success')
-      break
-    case 'rename':
-      renameTarget.value = song
-      showRenameDialog.value = true
-      break
-    case 'remove-fav':
-      favorites.remove(song.bvid)
-      showToast('已从收藏移除', 'success')
-      break
-  }
-}
-
-function handleRename(newTitle) {
-  if (renameTarget.value) {
-    const bvid = renameTarget.value.bvid
-    favorites.rename(bvid, newTitle)
-    playlists.renameSongInAllPlaylists(bvid, newTitle)
-    player.renameQueueSong(bvid, newTitle)
-    showToast('已重命名', 'success')
-  }
-  showRenameDialog.value = false
-}
+const {
+  ctxMenu,
+  ctxItems,
+  openContextMenu,
+  handleCtxAction,
+  addToNext,
+  addToPlaylist,
+  showAddModal,
+  selectedSong,
+  showRenameDialog,
+  renameTarget,
+  handleRename,
+} = useSongContextMenu({
+  onPlay: handlePlay,
+  onRemove: handleRemove,
+  removeLabel: '从收藏移除',
+  canRename: true,
+})
 </script>
 
 <template>
@@ -130,9 +73,9 @@ function handleRename(newTitle) {
         :songs="favorites.items"
         empty-text="还没有收藏任何歌曲，去搜索添加吧"
         @play="handlePlay"
-        @add-to-playlist="handleAddToPlaylist"
-        @add-to-next="handleAddToNext"
-        @context-menu="handleContextMenu"
+        @add-to-playlist="addToPlaylist"
+        @add-to-next="addToNext"
+        @context-menu="openContextMenu"
       />
     </div>
 

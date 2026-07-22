@@ -3,8 +3,8 @@ import { ref, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { usePlaylistsStore } from '../stores/playlists'
 import { usePlayerStore } from '../stores/player'
-import { useFavoritesStore } from '../stores/favorites'
 import { useToast } from '../composables/useToast'
+import { useSongContextMenu } from '../composables/useSongContextMenu'
 import { getImageUrl } from '../api'
 import MusicList from '../components/MusicList.vue'
 import PlaylistModal from '../components/PlaylistModal.vue'
@@ -17,25 +17,15 @@ const route = useRoute()
 const router = useRouter()
 const playlists = usePlaylistsStore()
 const player = usePlayerStore()
-const favorites = useFavoritesStore()
 const { showToast } = useToast()
 
 const showCreateModal = ref(false)
-const showAddModal = ref(false)
-const selectedSong = ref(null)
 
 // 确认删除弹窗
 const showDeleteDialog = ref(false)
-// 重命名弹窗
+// 歌单重命名弹窗
 const showRenameModal = ref(false)
 const renameTarget = ref(null)
-// 歌曲重命名弹窗
-const showSongRenameDialog = ref(false)
-const songRenameTarget = ref(null)
-
-// 右键菜单
-const ctxMenu = ref({ show: false, x: 0, y: 0, song: null })
-const ctxItems = ref([])
 
 const playlistId = computed(() => route.params.id)
 const currentPlaylist = computed(() => {
@@ -77,19 +67,6 @@ function handleAddToQueue() {
   }
 }
 
-function handleAddToPlaylist(song) {
-  selectedSong.value = song
-  showAddModal.value = true
-}
-
-function handleAddToNext(song) {
-  if (player.insertNext(song)) {
-    showToast(`已添加到下一首：${song.title}`, 'success')
-  } else {
-    showToast('该歌曲已在播放列表中', 'info')
-  }
-}
-
 function handleRemoveSong(song) {
   if (currentPlaylist.value) {
     playlists.removeFromPlaylist(currentPlaylist.value.id, song.bvid)
@@ -113,66 +90,32 @@ function confirmDelete() {
   }
 }
 
-// 打开重命名弹窗
+// 打开歌单重命名弹窗
 function handleRenameClick() {
   renameTarget.value = currentPlaylist.value
   showRenameModal.value = true
 }
 
-// 右键菜单
-function handleContextMenu({ song, event }) {
-  const isFav = favorites.isFavorite(song.bvid)
-  ctxItems.value = [
-    { icon: '▶', label: '播放', action: 'play' },
-    { divider: true },
-    { icon: '⤵', label: '添加到下一首', action: 'add-to-next' },
-    { icon: '♪', label: '添加到歌单', action: 'add-to-playlist' },
-    { icon: '♥', label: isFav ? '取消收藏' : '收藏', action: 'toggle-fav', active: isFav, danger: isFav },
-    { divider: true },
-    { icon: '✎', label: '重命名', action: 'rename' },
-    { icon: '✕', label: '从歌单移除', action: 'remove-from-playlist', danger: true },
-  ]
-  ctxMenu.value = { show: true, x: event.clientX, y: event.clientY, song }
-}
-
-function handleCtxAction(action) {
-  const song = ctxMenu.value.song
-  if (!song) return
-
-  switch (action) {
-    case 'play':
-      handlePlay(song)
-      break
-    case 'add-to-next':
-      handleAddToNext(song)
-      break
-    case 'add-to-playlist':
-      handleAddToPlaylist(song)
-      break
-    case 'toggle-fav':
-      favorites.toggle(song)
-      showToast(favorites.isFavorite(song.bvid) ? '已收藏' : '已取消收藏', 'success')
-      break
-    case 'rename':
-      songRenameTarget.value = song
-      showSongRenameDialog.value = true
-      break
-    case 'remove-from-playlist':
-      handleRemoveSong(song)
-      break
-  }
-}
-
-function handleSongRename(newTitle) {
-  if (songRenameTarget.value && currentPlaylist.value) {
-    const bvid = songRenameTarget.value.bvid
-    playlists.renameSongInAllPlaylists(bvid, newTitle)
-    favorites.rename(bvid, newTitle)
-    player.renameQueueSong(bvid, newTitle)
-    showToast('已重命名', 'success')
-  }
-  showSongRenameDialog.value = false
-}
+// 右键菜单（含歌曲重命名 / 从歌单移除）
+// 注：歌单级 renameTarget 与歌曲级 songRenameTarget（来自组合式）刻意区分命名
+const {
+  ctxMenu,
+  ctxItems,
+  openContextMenu,
+  handleCtxAction,
+  addToNext,
+  addToPlaylist,
+  showAddModal,
+  selectedSong,
+  showRenameDialog,
+  renameTarget: songRenameTarget,
+  handleRename,
+} = useSongContextMenu({
+  onPlay: handlePlay,
+  onRemove: handleRemoveSong,
+  removeLabel: '从歌单移除',
+  canRename: true,
+})
 </script>
 
 <template>
@@ -220,10 +163,10 @@ function handleSongRename(newTitle) {
         :show-remove="true"
         empty-text="歌单为空，去搜索添加歌曲吧"
         @play="handlePlay"
-        @add-to-playlist="handleAddToPlaylist"
-        @add-to-next="handleAddToNext"
+        @add-to-playlist="addToPlaylist"
+        @add-to-next="addToNext"
         @remove="handleRemoveSong"
-        @context-menu="handleContextMenu"
+        @context-menu="openContextMenu"
       />
     </template>
 
@@ -307,11 +250,11 @@ function handleSongRename(newTitle) {
       @close="ctxMenu.show = false"
     />
     <RenameDialog
-      :show="showSongRenameDialog"
+      :show="showRenameDialog"
       title="重命名歌曲"
       :initial-value="songRenameTarget?.title || ''"
-      @confirm="handleSongRename"
-      @cancel="showSongRenameDialog = false"
+      @confirm="handleRename"
+      @cancel="showRenameDialog = false"
     />
   </div>
 </template>

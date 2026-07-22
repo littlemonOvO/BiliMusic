@@ -1,16 +1,14 @@
 <script setup>
-import { ref, computed } from 'vue'
+import { computed } from 'vue'
 import { usePlayerStore } from '../stores/player'
 import { useToast } from '../composables/useToast'
+import { useSongContextMenu } from '../composables/useSongContextMenu'
 import { getImageUrl } from '../api'
 import MusicList from '../components/MusicList.vue'
 import AddToPlaylistModal from '../components/AddToPlaylistModal.vue'
 
 const player = usePlayerStore()
 const { showToast } = useToast()
-
-const showAddModal = ref(false)
-const selectedSong = ref(null)
 
 const queue = computed(() => player.playQueue)
 
@@ -19,18 +17,9 @@ function handlePlay(song) {
   showToast(`正在播放：${song.title}`, 'success')
 }
 
-function handleAddToNext(song) {
-  if (player.insertNext(song)) {
-    showToast(`已添加到下一首：${song.title}`, 'success')
-  } else {
-    showToast('该歌曲已在播放列表中', 'info')
-  }
-}
-
-function handleAddToPlaylist(song) {
-  selectedSong.value = song
-  showAddModal.value = true
-}
+const { addToNext, addToPlaylist, showAddModal, selectedSong } = useSongContextMenu({
+  onPlay: handlePlay,
+})
 </script>
 
 <template>
@@ -78,8 +67,8 @@ function handleAddToPlaylist(song) {
         :songs="queue"
         empty-text="播放队列为空，去搜索添加歌曲吧"
         @play="handlePlay"
-        @add-to-playlist="handleAddToPlaylist"
-        @add-to-next="handleAddToNext"
+        @add-to-playlist="addToPlaylist"
+        @add-to-next="addToNext"
       />
     </div>
 
