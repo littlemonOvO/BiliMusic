@@ -1,9 +1,10 @@
 <script setup>
-import { ref, watch, nextTick, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { usePlayerStore } from './stores/player'
 import { useFavoritesStore } from './stores/favorites'
 import { useThemeStore } from './stores/theme'
 import { useToast } from './composables/useToast'
+import { useAudio } from './composables/useAudio'
 import { getImageUrl } from './api'
 import QueuePanel from './components/QueuePanel.vue'
 import AddToPlaylistMenu from './components/AddToPlaylistMenu.vue'
@@ -12,12 +13,26 @@ const player = usePlayerStore()
 const favorites = useFavoritesStore()
 const theme = useThemeStore()
 const { toasts, removeToast, showToast } = useToast()
-const audioRef = ref(null)
 const showQueuePanel = ref(false)
 const showPlaylistMenu = ref(false)
 const playlistMenuPos = ref({ x: 0, y: 0 })
-const audioRetryCount = ref(0)
-const MAX_AUDIO_RETRY = 2
+const {
+  audioRef,
+  handleAudioError,
+  handleSeek,
+  onAudioPlay,
+  onAudioPause,
+  onAudioPlaying,
+  onAudioEnded,
+  onAudioStalled,
+  onAudioWaiting,
+  onAudioSuspend,
+  onAudioAbort,
+  onAudioEmptied,
+  onAudioCanPlay,
+  onAudioTimeUpdate,
+  onAudioLoadedMetadata,
+} = useAudio()
 
 onMounted(() => {
   theme.init()
@@ -70,85 +85,6 @@ function closePlaylistMenu() {
   showPlaylistMenu.value = false
 }
 
-// 音频加载失败时自动重试（流失效等情况），带次数限制
-async function handleAudioError() {
-  if (!player.currentSong) return
-  if (audioRetryCount.value >= MAX_AUDIO_RETRY) {
-    showToast('音频流失效，请切换其他歌曲', 'error')
-    audioRetryCount.value = 0
-    player.isPlaying = false
-    return
-  }
-  audioRetryCount.value++
-  showToast('音频加载失败，正在重试...', 'info')
-  await player.play(player.currentSong)
-}
-
-watch(
-  () => player.isPlaying,
-  async (playing) => {
-    await nextTick()
-    const audio = audioRef.value
-    if (!audio) return
-    if (playing) {
-      try {
-        await audio.play()
-      } catch (err) {
-        if (err.name === 'AbortError') return
-        if (player.currentSong) {
-          await player.play(player.currentSong)
-        } else {
-          player.isPlaying = false
-        }
-      }
-    } else {
-      audio.pause()
-    }
-  }
-)
-
-watch(
-  () => player.currentSong?.audioStreamUrl,
-  async (url) => {
-    if (waitingTimer) {
-      clearTimeout(waitingTimer)
-      waitingTimer = null
-    }
-    if (!url) return
-    player.isPlaying = true
-    await nextTick()
-    const audio = audioRef.value
-    if (audio) {
-      audio.volume = player.volume
-      try {
-        await audio.play()
-      } catch (err) {
-        if (err.name === 'AbortError') return
-        if (player.currentSong) {
-          await player.play(player.currentSong)
-        }
-      }
-    }
-  }
-)
-
-watch(
-  () => player.volume,
-  (vol) => {
-    const audio = audioRef.value
-    if (audio) audio.volume = vol
-  }
-)
-
-function handleSeek(event) {
-  const audio = audioRef.value
-  const time = Number(event.target.value)
-  if (audio) {
-    audio.currentTime = time
-  }
-  player.seek(time)
-}
-
 function formatTime(seconds) {
   if (!seconds || isNaN(seconds)) return '0:00'
   const min = Math.floor(seconds / 60)
@@ -164,59 +100,6 @@ const progressPct = computed(() => {
 const volumePct = computed(() => Math.min(100, Math.max(0, player.volume * 100)))
 
 const bars = Array.from({ length: 32 }, (_, i) => i)
-
-// ===== audio 事件处理 =====
-let waitingTimer = null
-const WAITING_TIMEOUT = 15000
-
-function onAudioPlay() {
-  player.isPlaying = true
-}
-
-function onAudioPause() {
-  if (waitingTimer) {
-    clearTimeout(waitingTimer)
-    waitingTimer = null
-  }
-  player.isPlaying = false
-}
-
-function onAudioPlaying() {
-  if (waitingTimer) {
-    clearTimeout(waitingTimer)
-    waitingTimer = null
-  }
-  audioRetryCount.value = 0
-}
-
-function onAudioEnded() {
-  player.playNext()
-}
-
-function onAudioStalled(e) {}
-
-function onAudioWaiting(e) {
-  if (waitingTimer) clearTimeout(waitingTimer)
-  waitingTimer = setTimeout(async () => {
-    const audio = audioRef.value
-    if (!audio || audio.readyState >= 3) return
-    if (!player.currentSong) return
-    if (audioRetryCount.value >= MAX_AUDIO_RETRY) {
-      showToast('音频缓冲超时，请切换其他歌曲', 'error')
-      audioRetryCount.value = 0
-      player.isPlaying = false
-      return
-    }
-    audioRetryCount.value++
-    showToast('音频缓冲超时，正在重试...', 'info')
-    await player.play(player.currentSong)
-  }, WAITING_TIMEOUT)
-}
-
-function onAudioSuspend(e) {}
-function onAudioAbort() {}
-function onAudioEmptied() {}
-function onAudioCanPlay(e) {}
 </script>
 
 <template>
@@ -447,8 +330,8 @@ function onAudioCanPlay(e) {}
       v-if="player.currentSong?.audioStreamUrl"
       ref="audioRef"
       :src="player.currentSong.audioStreamUrl"
-      @timeupdate="player.currentTime = $event.target.currentTime"
-      @loadedmetadata="player.duration = $event.target.duration"
+      @timeupdate="onAudioTimeUpdate"
+      @loadedmetadata="onAudioLoadedMetadata"
       @play="onAudioPlay"
       @pause="onAudioPause"
       @playing="onAudioPlaying"
