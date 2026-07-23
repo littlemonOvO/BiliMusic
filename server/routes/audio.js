@@ -38,6 +38,19 @@ if (!fs.existsSync(CACHE_DIR)) {
   fs.mkdirSync(CACHE_DIR, { recursive: true })
 }
 
+// 启动时清理残留 .tmp（上次进程崩溃/被杀时中断的下载留下，无对应 .dat）
+// 启动时没有下载在进行，故所有 .tmp 都是残留，可安全删除
+try {
+  for (const f of fs.readdirSync(CACHE_DIR)) {
+    if (f.endsWith('.tmp')) {
+      fs.unlinkSync(path.join(CACHE_DIR, f))
+      console.log(`[Cache] 启动清理残留临时文件: ${f}`)
+    }
+  }
+} catch (e) {
+  console.error(`[Cache] 启动清理 .tmp 失败: ${e.message}`)
+}
+
 // 缓存键 -> 文件路径（优先用 bvid，保证同一首歌缓存键不变）
 function getCachePath(url, bvid) {
   const key = bvid || url
@@ -480,6 +493,16 @@ async function downloadToCache(url, dataPath, metaPath, songTitle = '', cacheHas
   const tmpPath = `${dataPath}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`
   const writeStream = fs.createWriteStream(tmpPath)
 
+  // 写入失败（磁盘满/EIO 等）时清理 .tmp，避免残留；下方 await 会感知 writeError 并抛出
+  let writeError = null
+  writeStream.on('error', (err) => {
+    writeError = err
+    log(`WRITE ERROR: ${err.message}`)
+    if (fs.existsSync(tmpPath)) {
+      try { fs.unlinkSync(tmpPath) } catch {}
+    }
+  })
+
   let contentType = 'audio/mp4'
   let expectedLength = 0
   let downloadedBytes = 0
@@ -523,7 +546,12 @@ async function downloadToCache(url, dataPath, metaPath, songTitle = '', cacheHas
     if (!result.error) {
       // 第一段就完整了
       writeStream.end()
-      await new Promise((r) => writeStream.on('finish', r))
+      await new Promise((resolve) => {
+        if (writeError) return resolve()
+        writeStream.once('finish', resolve)
+        writeStream.once('error', resolve)
+      })
+      if (writeError) throw new Error(`写入缓存失败: ${writeError.message}`)
       return finishDownload(tmpPath, dataPath, metaPath, contentType, expectedLength, downloadedBytes, songTitle, cacheHash, isBackground, reqId)
     }
     log(`${tag}-INTERRUPT  chunk=1  downloaded=${downloadedBytes}/${expectedLength}`)
@@ -579,7 +607,12 @@ async function downloadToCache(url, dataPath, metaPath, songTitle = '', cacheHas
   log(`${tag}-DOWNLOAD-END  downloaded=${downloadedBytes}/${expectedLength}  chunks=${chunkIndex}`)
 
   writeStream.end()
-  await new Promise((r) => writeStream.on('finish', r))
+  await new Promise((resolve) => {
+    if (writeError) return resolve()
+    writeStream.once('finish', resolve)
+    writeStream.once('error', resolve)
+  })
+  if (writeError) throw new Error(`写入缓存失败: ${writeError.message}`)
   return finishDownload(tmpPath, dataPath, metaPath, contentType, expectedLength, downloadedBytes, songTitle, cacheHash, isBackground, reqId)
 }
 
