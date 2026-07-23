@@ -749,4 +749,26 @@ const bars = Array.from({ length: 32 }, (_, i) => i)
   0%, 100% { opacity: 1; }
   50% { opacity: 0.4; }
 }
+
+// Responsive
+@media (max-width: 900px) {
+  .player-bar__zone--ctrl {
+    padding: 0 $sp-3;
+  }
+  .player-bar__zone--now {
+    width: 180px;
+  }
+  .player-bar__wave {
+    width: 90px;
+  }
+}
+
+@media (max-width: 640px) {
+  .player-bar__zone--now {
+    width: 140px;
+  }
+  .player-bar__wave {
+    display: none;
+  }
+}
 </style>
