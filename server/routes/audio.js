@@ -130,6 +130,108 @@ function cleanCache() {
   }
 }
 
+// 分块下载到 writable sink：首段拉取后，若未拉满 expectedLength 则用 Range 续传，
+// 直到拉满或达到 MAX_CHUNKS。B站 CDN 中断后自动断点续传。
+// /stream 与 downloadToCache 共用此逻辑，避免两处各写一份分块/续传代码。
+//
+// - sink：数据写入目标（流式路径传 PassThrough，磁盘补全传 fs.WriteStream）
+// - onFirst(resp, contentType, expectedLength)：首段响应到达、数据流出前的钩子
+//   （流式路径用于设置客户端响应头；磁盘补全仅用于打日志）
+// - onProgress(downloadedBytes)：每段下载后回调（流式路径用于客户端断开日志的字节数）
+// - tag：日志前缀（流式路径为 ''，磁盘补全为 'BG'/'DL'）
+// 返回 { contentType, expectedLength, downloadedBytes, hadError }
+async function fetchSegments(url, sink, { log, tag = '', onFirst = null, onProgress = null } = {}) {
+  const MAX_CHUNKS = 10
+  const prefix = tag ? `${tag}-` : ''
+  let contentType = 'audio/mp4'
+  let expectedLength = 0
+  let downloadedBytes = 0
+  let chunkIndex = 0
+  let hadError = false
+
+  // 把一段已打开的 resp.data 流入 sink（带 backpressure），返回 { size, error }
+  // 错误不 reject：返回已下载部分，由调用方决定是否续传
+  function pipeSegment(resp, startByte, chunkContentLength) {
+    let chunkSize = 0
+    const t0 = Date.now()
+    return new Promise((resolve) => {
+      resp.data.on('data', (chunk) => {
+        chunkSize += chunk.length
+        const ok = sink.write(chunk)
+        if (!ok) {
+          resp.data.pause()
+          sink.once('drain', () => resp.data.resume())
+        }
+      })
+      resp.data.on('end', () => {
+        const elapsed = Date.now() - t0
+        log(`${prefix}CHUNK-DONE  chunk=${chunkIndex}  chunkSize=${chunkSize}  chunkContentLength=${chunkContentLength || 'N/A'}  elapsed=${elapsed}ms  total=${chunkSize + startByte}/${expectedLength}`)
+        resolve({ size: chunkSize, error: null })
+      })
+      resp.data.on('error', (err) => {
+        const elapsed = Date.now() - t0
+        log(`${prefix}CHUNK-ERROR  chunk=${chunkIndex}  chunkSize=${chunkSize}  elapsed=${elapsed}ms  error=${err.message}  total=${chunkSize + startByte}/${expectedLength}`)
+        resolve({ size: chunkSize, error: err })
+      })
+    })
+  }
+
+  // 首段
+  chunkIndex = 1
+  {
+    const resp = await axios.get(url, {
+      headers: BILIBILI_HEADERS,
+      responseType: 'stream',
+      timeout: 30000,
+      validateStatus: (s) => s >= 200 && s < 400,
+    })
+    contentType = resp.headers['content-type'] || 'audio/mp4'
+    expectedLength = parseInt(resp.headers['content-length'])
+    onFirst?.(resp, contentType, expectedLength)
+
+    // 首段是全量 GET，chunk 内容长度即总长度
+    const result = await pipeSegment(resp, 0, expectedLength)
+    downloadedBytes += result.size
+    onProgress?.(downloadedBytes)
+    if (result.error) {
+      log(`${prefix}INTERRUPT  chunk=1  downloaded=${downloadedBytes}/${expectedLength}  error=${result.error.message}`)
+      hadError = true
+    }
+  }
+
+  // 后续段：B站中断后用 Range 请求从断点继续
+  // 注意：不能仅靠 result.error 判断是否完整，B站 CDN 有时提前 end 但数据不完整
+  while (expectedLength && downloadedBytes < expectedLength && chunkIndex < MAX_CHUNKS) {
+    chunkIndex++
+    try {
+      const resp = await axios.get(url, {
+        headers: { ...BILIBILI_HEADERS, Range: `bytes=${downloadedBytes}-` },
+        responseType: 'stream',
+        timeout: 30000,
+        validateStatus: (s) => s >= 200 && s < 400,
+      })
+      const chunkContentLength = parseInt(resp.headers['content-length'])
+      const contentRange = resp.headers['content-range']
+      log(`${prefix}RESUME  chunk=${chunkIndex}  bytes=${downloadedBytes}-  status=${resp.status}  contentLength=${chunkContentLength || 'N/A'}  contentRange=${contentRange || 'N/A'}`)
+
+      const result = await pipeSegment(resp, downloadedBytes, chunkContentLength)
+      downloadedBytes += result.size
+      onProgress?.(downloadedBytes)
+      if (result.error) {
+        log(`${prefix}INTERRUPT  chunk=${chunkIndex}  downloaded=${downloadedBytes}/${expectedLength}  error=${result.error.message}`)
+        hadError = true
+      }
+    } catch (chunkErr) {
+      log(`${prefix}CHUNK-ERROR  chunk=${chunkIndex}  downloaded=${downloadedBytes}/${expectedLength}  error=${chunkErr.message}`)
+      hadError = true
+      break
+    }
+  }
+
+  log(`${prefix}DOWNLOAD-END  downloaded=${downloadedBytes}/${expectedLength}  chunks=${chunkIndex}  hadError=${hadError}`)
+  return { contentType, expectedLength, downloadedBytes, hadError }
+}
+
 // 音频流代理：
 // - 缓存命中：从磁盘读取，支持 Range 请求
 // - 缓存未命中：从 B站 CDN 边下载边响应客户端，同时写入磁盘缓存
@@ -280,25 +382,6 @@ router.get('/stream', async (req, res) => {
     // 从 B站 CDN 边下载边响应客户端 + 同时写入磁盘缓存
     // B站 CDN 中断时自动从断点继续下载，拼接成完整流
     log(`STREAM  title="${songTitle}"  file=${cacheHash}  url=${url.slice(0, 80)}...`)
-    const response = await axios.get(url, {
-      headers: BILIBILI_HEADERS,
-      responseType: 'stream',
-      timeout: 30000,
-      validateStatus: (s) => s >= 200 && s < 400,
-    })
-
-    const contentType = response.headers['content-type'] || 'audio/mp4'
-    const expectedLength = parseInt(response.headers['content-length'])
-
-    log(`BILI-RESP  status=${response.status}  contentLength=${expectedLength || 'N/A'}  contentType=${contentType}`)
-
-    // 响应头
-    res.setHeader('Content-Type', contentType)
-    if (expectedLength) {
-      res.setHeader('Content-Length', expectedLength)
-    }
-    res.setHeader('Accept-Ranges', 'bytes')
-    res.status(200)
 
     // 临时文件用于缓存
     const tmpPath = `${dataPath}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`
@@ -311,124 +394,41 @@ router.get('/stream', async (req, res) => {
 
     // 客户端断开时：让下载继续写磁盘，只停止给客户端
     let clientClosed = false
+    const progress = { downloaded: 0, expected: 0 }
     req.on('close', () => {
       clientClosed = true
       passThrough.unpipe(res)
-      log(`CLIENT-DISCONNECT  downloaded=${downloadedBytes}/${expectedLength || 'N/A'}`)
+      log(`CLIENT-DISCONNECT  downloaded=${progress.downloaded}/${progress.expected || 'N/A'}`)
     })
 
-    // 分块下载：B站 CDN 中断后用 Range 请求从断点继续
-    const MAX_CHUNKS = 10
-    let downloadedBytes = 0
-    let chunkIndex = 0
-
-    // 下载一个分块，返回本段下载的字节数
-    async function downloadChunk(startByte) {
-      chunkIndex++
-      const headers = { ...BILIBILI_HEADERS }
-      if (startByte > 0) {
-        headers.Range = `bytes=${startByte}-`
-      }
-
-      const chunkStartTime = Date.now()
-      const resp = await axios.get(url, {
-        headers,
-        responseType: 'stream',
-        timeout: 30000,
-        validateStatus: (s) => s >= 200 && s < 400, // 接受 2xx/3xx，416 等会抛异常被 catch
+    // 分块下载（首段 + 断点续传）统一由 fetchSegments 处理
+    let seg
+    try {
+      seg = await fetchSegments(url, passThrough, {
+        log,
+        tag: '',
+        onFirst: (resp, ct, len) => {
+          progress.expected = len
+          log(`BILI-RESP  status=${resp.status}  contentLength=${len || 'N/A'}  contentType=${ct}`)
+          res.setHeader('Content-Type', ct)
+          if (len) res.setHeader('Content-Length', len)
+          res.setHeader('Accept-Ranges', 'bytes')
+          res.status(200)
+        },
+        onProgress: (n) => {
+          progress.downloaded = n
+        },
       })
-
-      const chunkContentLength = parseInt(resp.headers['content-length'])
-      const contentRange = resp.headers['content-range']
-      if (startByte > 0) {
-        log(`RESUME  chunk=${chunkIndex}  bytes=${startByte}-  status=${resp.status}  contentLength=${chunkContentLength || 'N/A'}  contentRange=${contentRange || 'N/A'}  title="${songTitle}"  file=${cacheHash}`)
+    } catch (e) {
+      // 首段拉取失败（B站不可达等）：清理已创建的写流和临时文件后向上抛
+      passThrough.destroy()
+      writeStream.destroy()
+      if (fs.existsSync(tmpPath)) {
+        try { fs.unlinkSync(tmpPath) } catch {}
       }
-
-      let chunkSize = 0
-
-      return new Promise((resolve) => {
-        resp.data.on('data', (chunk) => {
-          chunkSize += chunk.length
-          const ok = passThrough.write(chunk)
-          if (!ok) {
-            resp.data.pause()
-            passThrough.once('drain', () => resp.data.resume())
-          }
-        })
-
-        resp.data.on('end', () => {
-          const elapsed = Date.now() - chunkStartTime
-          if (startByte > 0) {
-            log(`CHUNK-DONE  chunk=${chunkIndex}  chunkSize=${chunkSize}  chunkContentLength=${chunkContentLength || 'N/A'}  elapsed=${elapsed}ms  total=${chunkSize + startByte}/${expectedLength}`)
-          } else {
-            log(`CHUNK-DONE  chunk=1  chunkSize=${chunkSize}  elapsed=${elapsed}ms  total=${chunkSize}/${expectedLength}`)
-          }
-          resolve({ size: chunkSize, error: null })
-        })
-
-        resp.data.on('error', (err) => {
-          const elapsed = Date.now() - chunkStartTime
-          log(`CHUNK-ERROR  chunk=${chunkIndex}  chunkSize=${chunkSize}  elapsed=${elapsed}ms  error=${err.message}  total=${chunkSize + startByte}/${expectedLength}`)
-          // 返回已下载的部分，不 reject
-          resolve({ size: chunkSize, error: err })
-        })
-      })
+      throw e
     }
-
-    // 循环下载直到完整或达到最大分块数
-    let hadError = false
-
-    // 第一段：复用已打开的 response
-    {
-      let chunkSize = 0
-      const chunkStartTime = Date.now()
-      const result = await new Promise((resolve) => {
-        response.data.on('data', (chunk) => {
-          chunkSize += chunk.length
-          const ok = passThrough.write(chunk)
-          if (!ok) {
-            response.data.pause()
-            passThrough.once('drain', () => response.data.resume())
-          }
-        })
-        response.data.on('end', () => {
-          const elapsed = Date.now() - chunkStartTime
-          log(`CHUNK-DONE  chunk=1  chunkSize=${chunkSize}  elapsed=${elapsed}ms  total=${chunkSize}/${expectedLength}`)
-          resolve({ size: chunkSize, error: null })
-        })
-        response.data.on('error', (err) => {
-          const elapsed = Date.now() - chunkStartTime
-          log(`CHUNK-ERROR  chunk=1  chunkSize=${chunkSize}  elapsed=${elapsed}ms  error=${err.message}  total=${chunkSize}/${expectedLength}`)
-          resolve({ size: chunkSize, error: err })
-        })
-      })
-      downloadedBytes += result.size
-      chunkIndex = 1
-      if (result.error) {
-        log(`INTERRUPT  chunk=1  downloaded=${downloadedBytes}/${expectedLength}  error=${result.error.message}`)
-        hadError = true
-      }
-    }
-
-    // 后续段：B站中断后用 Range 请求从断点继续
-    // 注意：不能仅靠 result.error 判断是否完整，B站 CDN 有时提前 end 但数据不完整
-    while (downloadedBytes < expectedLength && chunkIndex < MAX_CHUNKS) {
-      try {
-        const result = await downloadChunk(downloadedBytes)
-        downloadedBytes += result.size
-
-        if (result.error) {
-          log(`INTERRUPT  chunk=${chunkIndex}  downloaded=${downloadedBytes}/${expectedLength}  error=${result.error.message}`)
-          hadError = true
-        }
-      } catch (chunkErr) {
-        log(`CHUNK-ERROR  chunk=${chunkIndex}  downloaded=${downloadedBytes}/${expectedLength}  error=${chunkErr.message}`)
-        hadError = true
-        break
-      }
-    }
-
-    log(`DOWNLOAD-END  downloaded=${downloadedBytes}/${expectedLength}  chunks=${chunkIndex}  hadError=${hadError}  clientClosed=${clientClosed}`)
+    const { contentType, expectedLength, downloadedBytes, hadError } = seg
 
     // 结束 passThrough，pipe 会自动 end writeStream 和 res
     // 注意：不要手动 writeStream.end()，否则 PassThrough 缓冲里剩余数据会丢失
@@ -457,7 +457,7 @@ router.get('/stream', async (req, res) => {
       writeMeta(metaPath, {
         contentType,
         size: actualSize,
-        url: url.slice(0, 100),
+        url: '',
         createdAt: Date.now(),
         complete: isComplete,
         hits: 0,
@@ -482,7 +482,7 @@ router.get('/stream', async (req, res) => {
 })
 
 // 完整下载到磁盘缓存（用于 seek 场景 / 后台补全不完整缓存）
-// 支持 B站 CDN 中断后断点续传
+// 支持 B站 CDN 中断后断点续传（分块逻辑由 fetchSegments 提供）
 async function downloadToCache(url, dataPath, metaPath, songTitle = '', cacheHash = '', isBackground = false) {
   const reqId = Date.now() + (Math.random() * 1000 | 0)
   const log = (msg) => console.log(`[Cache:${reqId}] ${msg}`)
@@ -503,108 +503,13 @@ async function downloadToCache(url, dataPath, metaPath, songTitle = '', cacheHas
     }
   })
 
-  let contentType = 'audio/mp4'
-  let expectedLength = 0
-  let downloadedBytes = 0
-  let chunkIndex = 0
-  const MAX_CHUNKS = 10
-
-  // 第一段
-  {
-    const response = await axios.get(url, {
-      headers: BILIBILI_HEADERS,
-      responseType: 'stream',
-      timeout: 30000,
-      validateStatus: (s) => s >= 200 && s < 400,
-    })
-    contentType = response.headers['content-type'] || 'audio/mp4'
-    expectedLength = parseInt(response.headers['content-length'])
-
-    log(`${tag}-RESP  status=${response.status}  contentLength=${expectedLength || 'N/A'}  contentType=${contentType}`)
-
-    let chunkSize = 0
-    const chunkStartTime = Date.now()
-    const result = await new Promise((resolve) => {
-      response.data.on('data', (chunk) => {
-        chunkSize += chunk.length
-        writeStream.write(chunk)
-      })
-      response.data.on('end', () => {
-        const elapsed = Date.now() - chunkStartTime
-        log(`${tag}-CHUNK-DONE  chunk=1  chunkSize=${chunkSize}  elapsed=${elapsed}ms  total=${chunkSize}/${expectedLength}`)
-        resolve({ size: chunkSize, error: null })
-      })
-      response.data.on('error', (err) => {
-        const elapsed = Date.now() - chunkStartTime
-        log(`${tag}-CHUNK-ERROR  chunk=1  chunkSize=${chunkSize}  elapsed=${elapsed}ms  error=${err.message}  total=${chunkSize}/${expectedLength}`)
-        resolve({ size: chunkSize, error: err })
-      })
-    })
-    downloadedBytes += result.size
-    chunkIndex = 1
-
-    if (!result.error) {
-      // 第一段就完整了
-      writeStream.end()
-      await new Promise((resolve) => {
-        if (writeError) return resolve()
-        writeStream.once('finish', resolve)
-        writeStream.once('error', resolve)
-      })
-      if (writeError) throw new Error(`写入缓存失败: ${writeError.message}`)
-      return finishDownload(tmpPath, dataPath, metaPath, contentType, expectedLength, downloadedBytes, songTitle, cacheHash, isBackground, reqId)
-    }
-    log(`${tag}-INTERRUPT  chunk=1  downloaded=${downloadedBytes}/${expectedLength}`)
-  }
-
-  // 后续段：断点续传
-  // 注意：不能仅靠 result.error 判断是否完整，B站 CDN 有时提前 end 但数据不完整
-  while (expectedLength && downloadedBytes < expectedLength && chunkIndex < MAX_CHUNKS) {
-    chunkIndex++
-    const headers = { ...BILIBILI_HEADERS, Range: `bytes=${downloadedBytes}-` }
-
-    try {
-      const chunkStartTime = Date.now()
-      const resp = await axios.get(url, {
-        headers,
-        responseType: 'stream',
-        timeout: 30000,
-        validateStatus: (s) => s >= 200 && s < 400,
-      })
-
-      const chunkContentLength = parseInt(resp.headers['content-length'])
-      const contentRange = resp.headers['content-range']
-      log(`${tag}-RESUME  chunk=${chunkIndex}  bytes=${downloadedBytes}-  status=${resp.status}  contentLength=${chunkContentLength || 'N/A'}  contentRange=${contentRange || 'N/A'}`)
-
-      let chunkSize = 0
-      const result = await new Promise((resolve) => {
-        resp.data.on('data', (chunk) => {
-          chunkSize += chunk.length
-          writeStream.write(chunk)
-        })
-        resp.data.on('end', () => {
-          const elapsed = Date.now() - chunkStartTime
-          log(`${tag}-CHUNK-DONE  chunk=${chunkIndex}  chunkSize=${chunkSize}  chunkContentLength=${chunkContentLength || 'N/A'}  elapsed=${elapsed}ms  total=${chunkSize + downloadedBytes}/${expectedLength}`)
-          resolve({ size: chunkSize, error: null })
-        })
-        resp.data.on('error', (err) => {
-          const elapsed = Date.now() - chunkStartTime
-          log(`${tag}-CHUNK-ERROR  chunk=${chunkIndex}  chunkSize=${chunkSize}  elapsed=${elapsed}ms  error=${err.message}  total=${chunkSize + downloadedBytes}/${expectedLength}`)
-          resolve({ size: chunkSize, error: err })
-        })
-      })
-      downloadedBytes += result.size
-
-      if (result.error) {
-        log(`${tag}-INTERRUPT  chunk=${chunkIndex}  downloaded=${downloadedBytes}/${expectedLength}`)
-      }
-    } catch (chunkErr) {
-      log(`${tag}-CHUNK-ERROR  chunk=${chunkIndex}  downloaded=${downloadedBytes}/${expectedLength}  error=${chunkErr.message}`)
-      break
-    }
-  }
-
-  log(`${tag}-DOWNLOAD-END  downloaded=${downloadedBytes}/${expectedLength}  chunks=${chunkIndex}`)
+  const { contentType, expectedLength, downloadedBytes } = await fetchSegments(url, writeStream, {
+    log,
+    tag,
+    onFirst: (resp, ct, len) => {
+      log(`${tag}-RESP  status=${resp.status}  contentLength=${len || 'N/A'}  contentType=${ct}`)
+    },
+  })
 
   writeStream.end()
   await new Promise((resolve) => {
