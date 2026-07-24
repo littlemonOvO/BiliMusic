@@ -19,12 +19,7 @@ const {
   onAudioPause,
   onAudioPlaying,
   onAudioEnded,
-  onAudioStalled,
   onAudioWaiting,
-  onAudioSuspend,
-  onAudioAbort,
-  onAudioEmptied,
-  onAudioCanPlay,
   onAudioTimeUpdate,
   onAudioLoadedMetadata,
 } = useAudio()
@@ -247,12 +242,7 @@ const bars = Array.from({ length: 32 }, (_, i) => i)
     @playing="onAudioPlaying"
     @ended="onAudioEnded"
     @error="handleAudioError"
-    @stalled="onAudioStalled"
     @waiting="onAudioWaiting"
-    @suspend="onAudioSuspend"
-    @abort="onAudioAbort"
-    @emptied="onAudioEmptied"
-    @canplay="onAudioCanPlay"
   ></audio>
 </template>
 

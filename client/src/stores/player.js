@@ -63,11 +63,6 @@ export const usePlayerStore = defineStore('player', () => {
     isPlaying.value = !isPlaying.value
   }
 
-  function stop() {
-    isPlaying.value = false
-    currentTime.value = 0
-  }
-
   function seek(time) {
     currentTime.value = time
   }
@@ -303,7 +298,6 @@ export const usePlayerStore = defineStore('player', () => {
     progress,
     play,
     togglePlay,
-    stop,
     seek,
     setVolume,
     setQueue,

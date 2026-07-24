@@ -121,7 +121,6 @@ export function useAudio() {
     player.playNext()
   }
 
-  function onAudioStalled() {}
 
   function onAudioWaiting() {
     if (waitingTimer) clearTimeout(waitingTimer)
@@ -141,10 +140,6 @@ export function useAudio() {
     }, WAITING_TIMEOUT)
   }
 
-  function onAudioSuspend() {}
-  function onAudioAbort() {}
-  function onAudioEmptied() {}
-  function onAudioCanPlay() {}
 
   function onAudioTimeUpdate(event) {
     player.currentTime = event.target.currentTime
@@ -162,12 +157,7 @@ export function useAudio() {
     onAudioPause,
     onAudioPlaying,
     onAudioEnded,
-    onAudioStalled,
     onAudioWaiting,
-    onAudioSuspend,
-    onAudioAbort,
-    onAudioEmptied,
-    onAudioCanPlay,
     onAudioTimeUpdate,
     onAudioLoadedMetadata,
   }
